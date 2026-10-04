@@ -1,0 +1,39 @@
+name: Release CTX App
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Tests
+        timeout-minutes: 20
+        run: swift run CTXCoreTests
+
+      - name: Build and Package Release
+        run: ./script/build_and_run.sh release
+        env:
+          CTX_RELEASE_VERSION: ${{ github.ref_name }}
+
+      - name: Upload Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CTX-${{ github.ref_name }}
+          path: dist/CTX.app.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/CTX.app.zip

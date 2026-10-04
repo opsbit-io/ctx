@@ -1,0 +1,414 @@
+import Foundation
+
+public enum CloudProvider: String, Codable, CaseIterable, Sendable {
+    case aws = "AWS"
+    case gcp = "GCP"
+    case azure = "Azure"
+    case kubernetes = "Kubernetes"
+
+    public var systemImage: String {
+        switch self {
+        case .aws:
+            "cloud"
+        case .gcp:
+            "globe"
+        case .azure:
+            "triangle"
+        case .kubernetes:
+            "shippingbox"
+        }
+    }
+
+    public var displayName: String {
+        switch self {
+        case .aws: "AWS"
+        case .gcp: "Google Cloud"
+        case .azure: "Azure"
+        case .kubernetes: "Kubernetes"
+        }
+    }
+
+    public var sectionHeaderTitle: String {
+        switch self {
+        case .aws: "AWS (Amazon Web Services)"
+        case .gcp: "GCP (Google Cloud Platform)"
+        case .azure: "Azure (Microsoft Azure)"
+        case .kubernetes: "Kubernetes & Clusters"
+        }
+    }
+}
+
+public enum ProfileStatus: String, Codable, Sendable {
+    case unknown = "Unknown"
+    case connecting = "Connecting"
+    case connected = "Connected"
+    case disconnecting = "Disconnecting"
+    case needsLogin = "Needs login"
+    case missingCli = "Missing CLI"
+}
+
+public struct CloudProfile: Identifiable, Codable, Hashable, Sendable {
+    public var id: String { "\(provider.rawValue):\(name)" }
+
+    public var provider: CloudProvider
+    public var name: String
+    public var accountID: String
+    public var roleName: String
+    public var region: String
+    public var ssoStartURL: String
+    public var ssoRegion: String
+    public var kubernetesCredentialKind: KubernetesCredentialKind
+    public var hasKubernetesCredentials: Bool
+    public var kubernetesLinkedProfile: String?
+    public var status: ProfileStatus
+
+    public init(
+        provider: CloudProvider,
+        name: String,
+        accountID: String = "",
+        roleName: String = "",
+        region: String = "",
+        ssoStartURL: String = "",
+        ssoRegion: String = "",
+        kubernetesCredentialKind: KubernetesCredentialKind = .none,
+        hasKubernetesCredentials: Bool = false,
+        kubernetesLinkedProfile: String? = nil,
+        status: ProfileStatus = .unknown
+    ) {
+        self.provider = provider
+        self.name = name
+        self.accountID = accountID
+        self.roleName = roleName
+        self.region = region
+        self.ssoStartURL = ssoStartURL
+        self.ssoRegion = ssoRegion
+        self.kubernetesCredentialKind = kubernetesCredentialKind
+        self.hasKubernetesCredentials = hasKubernetesCredentials
+        self.kubernetesLinkedProfile = kubernetesLinkedProfile
+        self.status = status
+    }
+
+    @available(*, deprecated, message: "Token values are discarded; use Kubernetes credential metadata.")
+    public init(
+        provider: CloudProvider,
+        name: String,
+        accountID: String = "",
+        roleName: String = "",
+        region: String = "",
+        ssoStartURL: String = "",
+        ssoRegion: String = "",
+        token: String,
+        status: ProfileStatus = .unknown
+    ) {
+        self.init(
+            provider: provider,
+            name: name,
+            accountID: accountID,
+            roleName: roleName,
+            region: region,
+            ssoStartURL: ssoStartURL,
+            ssoRegion: ssoRegion,
+            kubernetesCredentialKind: provider == .kubernetes && !token.isEmpty ? .bearerToken : .none,
+            hasKubernetesCredentials: provider == .kubernetes && !token.isEmpty,
+            status: status
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case name
+        case accountID
+        case roleName
+        case region
+        case ssoStartURL
+        case ssoRegion
+        case kubernetesCredentialKind
+        case hasKubernetesCredentials
+        case kubernetesLinkedProfile
+        case status
+        case token
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try values.decode(CloudProvider.self, forKey: .provider)
+        name = try values.decode(String.self, forKey: .name)
+        accountID = try values.decodeIfPresent(String.self, forKey: .accountID) ?? ""
+        roleName = try values.decodeIfPresent(String.self, forKey: .roleName) ?? ""
+        region = try values.decodeIfPresent(String.self, forKey: .region) ?? ""
+        ssoStartURL = try values.decodeIfPresent(String.self, forKey: .ssoStartURL) ?? ""
+        ssoRegion = try values.decodeIfPresent(String.self, forKey: .ssoRegion) ?? ""
+        status = try values.decodeIfPresent(ProfileStatus.self, forKey: .status) ?? .unknown
+        kubernetesLinkedProfile = try values.decodeIfPresent(String.self, forKey: .kubernetesLinkedProfile)
+
+        let legacyTokenWasPresent = !(try values.decodeIfPresent(String.self, forKey: .token) ?? "").isEmpty
+        kubernetesCredentialKind = try values.decodeIfPresent(KubernetesCredentialKind.self, forKey: .kubernetesCredentialKind)
+            ?? (provider == .kubernetes && legacyTokenWasPresent ? .bearerToken : .none)
+        hasKubernetesCredentials = try values.decodeIfPresent(Bool.self, forKey: .hasKubernetesCredentials)
+            ?? (provider == .kubernetes && legacyTokenWasPresent)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(provider, forKey: .provider)
+        try values.encode(name, forKey: .name)
+        try values.encode(accountID, forKey: .accountID)
+        try values.encode(roleName, forKey: .roleName)
+        try values.encode(region, forKey: .region)
+        try values.encode(ssoStartURL, forKey: .ssoStartURL)
+        try values.encode(ssoRegion, forKey: .ssoRegion)
+        try values.encode(kubernetesCredentialKind, forKey: .kubernetesCredentialKind)
+        try values.encode(hasKubernetesCredentials, forKey: .hasKubernetesCredentials)
+        try values.encodeIfPresent(kubernetesLinkedProfile, forKey: .kubernetesLinkedProfile)
+        try values.encode(status, forKey: .status)
+    }
+
+    public var accountLabel: String {
+        switch provider {
+        case .aws: "AWS Account"
+        case .gcp: "GCP Project"
+        case .azure: "Azure Subscription"
+        case .kubernetes: "Cluster"
+        }
+    }
+
+    public var roleLabel: String {
+        switch provider {
+        case .aws: "IAM Role"
+        case .gcp: "GCP Account"
+        case .azure: "Azure Tenant"
+        case .kubernetes: "User"
+        }
+    }
+
+    public var regionLabel: String {
+        switch provider {
+        case .aws: "Default Region"
+        case .gcp: "Compute Region"
+        case .azure: "Default Location"
+        case .kubernetes: "Namespace"
+        }
+    }
+
+    public var typeDescription: String {
+        switch provider {
+        case .aws: "AWS SSO Profile"
+        case .gcp: "GCP Configuration"
+        case .azure: "Azure Subscription"
+        case .kubernetes: "Kubernetes Context"
+        }
+    }
+
+    /// Whether reaching this context goes through a connection broker rather than
+    /// straight to the API server. Both are name-based guesses — a kubeconfig
+    /// doesn't state which broker fronts a cluster — so they live here as the one
+    /// place the guess is made. They were previously inlined at eight call sites
+    /// across four files, which meant every change to the detection needed eight
+    /// identical edits to stay consistent.
+    public var usesStrongDM: Bool {
+        Self.mentionsAny(of: ["sdm"], in: [roleName, name])
+    }
+
+    public var usesTeleport: Bool {
+        Self.mentionsAny(of: ["teleport"], in: [roleName, name])
+            || Self.mentionsAny(of: ["tsh"], in: [roleName])
+    }
+
+    /// True when any of `fields` contains any of `needles`, case-insensitively.
+    private static func mentionsAny(of needles: [String], in fields: [String]) -> Bool {
+        fields.contains { field in
+            let lowered = field.lowercased()
+            return needles.contains { lowered.contains($0) }
+        }
+    }
+}
+
+
+public enum CloudEnvironment: String, CaseIterable, Identifiable, Sendable {
+    case production = "Production"
+    case staging = "Staging"
+    case development = "Development"
+    case admin = "Admin"
+    case data = "Data"
+    case other = "Other"
+
+    public var id: String { rawValue }
+
+    public var icon: CloudFolderIcon {
+        switch self {
+        case .production:
+            .server
+        case .staging:
+            .cube
+        case .development:
+            .tools
+        case .admin:
+            .admin
+        case .data:
+            .database
+        case .other:
+            .folder
+        }
+    }
+
+    public static func infer(from profile: CloudProfile) -> CloudEnvironment {
+        let name = profile.name.lowercased()
+        let account = profile.accountID.lowercased()
+        if name.contains("redshift") || name.contains("mcp") || name.contains("jdbc") {
+            return .data
+        }
+        if name.contains("prod") || name.hasPrefix("prd") || account.contains("prod") || account.hasPrefix("prd") {
+            return .production
+        }
+        if name.contains("stg") || name.contains("stage") || account.contains("stg") || account.contains("stage") {
+            return .staging
+        }
+        if name.contains("dev") || name.contains("sandbox") || account.contains("dev") || account.contains("sandbox") {
+            return .development
+        }
+        if name.contains("admin") || name.contains("root") || name.hasPrefix("it-") || account.contains("admin") {
+            return .admin
+        }
+        return .other
+    }
+}
+
+public enum CloudFolderIcon: String, CaseIterable, Identifiable, Codable, Sendable {
+    case cloud
+    case server
+    case cube
+    case tools
+    case admin
+    case database
+    case folder
+    case shield
+    case terminal
+    case code
+
+    public var id: String { rawValue }
+
+    public var systemImage: String {
+        switch self {
+        case .cloud:
+            "cloud"
+        case .server:
+            "server.rack"
+        case .cube:
+            "shippingbox"
+        case .tools:
+            "hammer"
+        case .admin:
+            "person.badge.key"
+        case .database:
+            "cylinder.split.1x2"
+        case .folder:
+            "folder"
+        case .shield:
+            "shield"
+        case .terminal:
+            "terminal"
+        case .code:
+            "chevron.left.forwardslash.chevron.right"
+        }
+    }
+}
+
+public struct CloudFolder: Identifiable, Codable, Hashable, Sendable {
+    public var id: String
+    public var provider: CloudProvider
+    public var name: String
+    public var icon: CloudFolderIcon
+    public var isCustom: Bool
+
+    public init(
+        id: String,
+        provider: CloudProvider,
+        name: String,
+        icon: CloudFolderIcon,
+        isCustom: Bool = true
+    ) {
+        self.id = id
+        self.provider = provider
+        self.name = name
+        self.icon = icon
+        self.isCustom = isCustom
+    }
+
+    public static func builtIn(provider: CloudProvider, environment: CloudEnvironment) -> CloudFolder {
+        CloudFolder(
+            id: "\(provider.rawValue):\(environment.rawValue)",
+            provider: provider,
+            name: environment.rawValue,
+            icon: environment.icon,
+            isCustom: false
+        )
+    }
+}
+
+public struct ProfileGroup: Identifiable, Sendable {
+    public var id: String { folder.id }
+    public var folder: CloudFolder
+    public var profiles: [CloudProfile]
+
+    public init(folder: CloudFolder, profiles: [CloudProfile]) {
+        self.folder = folder
+        self.profiles = profiles
+    }
+}
+
+public struct AWSProfileDraft: Equatable, Sendable {
+    public var name = ""
+    public var ssoStartURL = ""
+    public var ssoRegion = ""
+    public var accountID = ""
+    public var roleName = ""
+    public var defaultRegion = ""
+
+    public init() {}
+
+    public init(profile: CloudProfile, duplicate: Bool = false) {
+        self.name = duplicate ? "\(profile.name)-copy" : profile.name
+        self.ssoStartURL = profile.ssoStartURL
+        self.ssoRegion = profile.ssoRegion
+        self.accountID = profile.accountID
+        self.roleName = profile.roleName
+        self.defaultRegion = profile.region
+    }
+}
+
+public struct GCPProfileDraft: Equatable, Sendable {
+    public var name = ""
+    public var project = ""
+    public var account = ""
+    public var region = ""
+
+    public init() {}
+
+    public init(profile: CloudProfile, duplicate: Bool = false) {
+        self.name = duplicate ? "\(profile.name)-copy" : profile.name
+        self.project = profile.accountID
+        self.account = profile.roleName
+        self.region = profile.region
+    }
+}
+
+public struct AzureProfileDraft: Equatable, Sendable {
+    public var name = ""
+    public var subscriptionID = ""
+    public var tenantID = ""
+    public var location = ""
+
+    public init() {}
+
+    public init(profile: CloudProfile, duplicate: Bool = false) {
+        self.name = duplicate ? "\(profile.name)-copy" : profile.name
+        self.subscriptionID = profile.accountID
+        self.tenantID = profile.roleName
+        self.location = profile.region
+    }
+}
+
+public enum SidebarSelection: Hashable, Codable, Sendable {
+    case profile(String)
+    case folder(String)
+}

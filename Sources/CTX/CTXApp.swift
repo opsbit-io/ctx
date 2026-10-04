@@ -1,0 +1,216 @@
+import CTXCore
+import SwiftUI
+import UserNotifications
+
+@main
+struct CTXApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var store = ProfileStore(shellSelectionURL: ShellIntegration.selectionURL)
+    @Environment(\.openWindow) private var openWindow
+
+    init() {
+        if CommandLine.arguments.contains("--mcp") || CommandLine.arguments.contains("mcp") {
+            CTXMCPServer.runStdio()
+            exit(0)
+        }
+    }
+
+    var body: some Scene {
+        Window("CTX", id: "main") {
+            ContentView(store: store)
+                .frame(minWidth: 760, minHeight: 500)
+                .onAppear {
+                    appDelegate.openWindow = openWindow
+                    appDelegate.store = store
+                }
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 980, height: 620)
+
+        WindowGroup("Cluster Workspace", id: "cluster-workspace", for: String.self) { $contextID in
+            ClusterWorkspaceScene(store: store, contextID: contextID ?? "")
+                .frame(minWidth: 840, minHeight: 560)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1180, height: 780)
+
+        // A real, separate window (not a `.sheet`) so the user can drag it
+        // anywhere on screen — sheets are permanently docked to their parent
+        // window's title bar on macOS and can't be repositioned.
+        Window("CTX Auth", id: "in-app-auth") {
+            InAppAuthWindowScene(store: store)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 900, height: 820)
+
+        MenuBarExtra {
+            MenuBarView(store: store)
+        } label: {
+            Image(systemName: store.hasActiveConnectedProfile ? "cloud.fill" : "cloud")
+        }
+        .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView(store: store)
+        }
+
+        .commands {
+            CommandMenu("Cloud") {
+                Button("Refresh Profiles") {
+                    store.refresh()
+                }
+                .keyboardShortcut("r")
+
+                if let profile = store.selectedProfile {
+                    Button("Connect Selected Profile") {
+                        store.login(profile, from: .mainWindow)
+                    }
+                    .keyboardShortcut("l", modifiers: [.command, .shift])
+
+                    Button("Verify Selected Profile") {
+                        Task { await store.verify(profile, isManualAttempt: true, from: .mainWindow) }
+                    }
+                    .keyboardShortcut("v", modifiers: [.command, .shift])
+                }
+            }
+        }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    var openWindow: OpenWindowAction?
+    var store: ProfileStore?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        applyAppearance()
+        NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.applyAppearance() }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let window = notification.object as? NSWindow else { return }
+            Task { @MainActor in self?.configureWindow(window) }
+        }
+
+
+        for window in NSApp.windows {
+            configureWindow(window)
+        }
+
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            UNUserNotificationCenter.current().delegate = self
+            AppNotificationService.shared.requestAuthorizationIfAvailable()
+            AppNotificationService.shared.registerNotificationCategories()
+        }
+    }
+
+    /// Applied app-wide so panels and alerts match the theme picker. Windows and
+    /// sheets inherit from `NSApp`, so this is the only place it needs setting.
+    @MainActor
+    private func applyAppearance() {
+        let wanted = AppAppearance.current.nsAppearance
+        guard NSApp.appearance?.name != wanted?.name else { return }
+        NSApp.appearance = wanted
+    }
+
+    @MainActor
+    private func configureWindow(_ window: NSWindow) {
+        CTXWindowChrome.apply(to: window)
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        if userInfo["type"] as? String == "update" {
+            DispatchQueue.main.async {
+                if let store = self.store {
+                    store.selectedSettingsTab = 2
+                }
+                NSApp.activate(ignoringOtherApps: true)
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+        } else if userInfo["type"] as? String == "cluster_anomaly" {
+            let contextID = userInfo["context_id"] as? String ?? ""
+            let resourceKind = userInfo["resource_kind"] as? String ?? ""
+            let resourceName = userInfo["resource_name"] as? String ?? ""
+            let namespace = userInfo["namespace"] as? String
+
+            let target = ResourceDeepLinkTarget(
+                contextID: contextID,
+                resourceKind: resourceKind,
+                resourceName: resourceName,
+                namespace: namespace,
+                tab: "diagnostics"
+            )
+
+            DispatchQueue.main.async {
+                if let store = self.store, !contextID.isEmpty {
+                    store.pendingClusterDeepLink[contextID] = target
+                }
+                if !contextID.isEmpty {
+                    self.openWindow?(id: "cluster-workspace", value: contextID)
+                }
+                NSApp.activate(ignoringOtherApps: true)
+
+                NotificationCenter.default.post(
+                    name: .ctxDeepLinkToResource,
+                    object: nil,
+                    userInfo: userInfo
+                )
+            }
+        } else if userInfo["type"] as? String == "cloud_session" {
+            let profileId = userInfo["profile_id"] as? String ?? ""
+            let profileName = userInfo["profile_name"] as? String ?? ""
+            DispatchQueue.main.async {
+                self.openWindow?(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+                if let store = self.store {
+                    let targetProfile = store.profiles.first(where: { $0.id == profileId })
+                        ?? store.profiles.first(where: { $0.name == profileName })
+                    if let targetProfile {
+                        store.selectProfile(targetProfile)
+                        store.pendingProfileDeepLinkID = targetProfile.id
+                        store.login(targetProfile, from: .mainWindow)
+                    }
+                }
+            }
+        }
+        completionHandler()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            openWindow?(id: "main")
+        } else {
+            for window in NSApp.windows {
+                if window.title == "CTX" || window.identifier?.rawValue == "main" || window.className.contains("Settings") {
+                    window.makeKeyAndOrderFront(nil)
+                }
+            }
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        return true
+    }
+}
