@@ -6,6 +6,7 @@ DerivedData/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
 .codex/
+.superpowers/
 .claude
 .idea/
 .swiftpm/
