@@ -27,6 +27,7 @@ func testIndentedKubeDiscoveryPreservesEntriesAndUsers() throws {
         let cloud = result.contexts.first { $0.contextName == "cloud-context" }!
         assert(cloud.credentialKind == .execPlugin && cloud.hasCredentials)
         assert(cloud.userName == "cloud-user")
+        assert(cloud.linkedAWSProfile == "team")
     }
 }
 
@@ -42,6 +43,85 @@ func testExplicitKubeAWSProfileDoesNotUseGlobalSelection() throws {
     assert(ProfileCommandService.explicitAWSProfile(in: broker) == nil)
     let explicit = try config(["command": "aws", "args": ["--profile", "other"], "env": [["name": "AWS_PROFILE", "value": "team"]]])
     assert(ProfileCommandService.explicitAWSProfile(in: explicit) == "other")
+}
+
+func testDiscoveryDoesNotTreatForeignExecEnvironmentAsAWSLink() throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: path) }
+    let text = """
+    clusters:
+    - name: broker-cluster
+      cluster:
+        server: https://127.0.0.1:6443
+    contexts:
+    - name: broker-context
+      context:
+        cluster: broker-cluster
+        user: broker-user
+    users:
+    - name: broker-user
+      user:
+        exec:
+          command: sdm
+          env:
+          - name: AWS_PROFILE
+            value: unrelated-profile
+    """
+    try text.write(to: path, atomically: true, encoding: .utf8)
+
+    let context = KubeConfigDiscoveryService().discover(paths: [path]).contexts.first
+    assert(context?.credentialKind == .execPlugin)
+    assert(context?.linkedAWSProfile == nil)
+}
+
+func testConnectionIdentityPresentationIsProviderScoped() {
+    let aws = CloudProfile(
+        provider: .aws,
+        name: "team-admin",
+        accountID: "123456789012",
+        roleName: "AdministratorAccess"
+    )
+    let kube = CloudProfile(
+        provider: .kubernetes,
+        name: "team-cluster",
+        accountID: "cluster-arn",
+        roleName: "cluster-user",
+        kubernetesCredentialKind: .execPlugin,
+        hasKubernetesCredentials: true,
+        kubernetesLinkedProfile: aws.name
+    )
+    let fields = ConnectionIdentityPresentation.fields(
+        for: kube,
+        linkedProfile: aws,
+        resolvedIdentity: "operator@example.com"
+    )
+    let values = Dictionary(uniqueKeysWithValues: fields.map { ($0.label, $0.value) })
+    assert(values["Kubernetes User"] == "cluster-user")
+    assert(values["Auth Provider"] == "AWS EKS")
+    assert(values["AWS Profile"] == "team-admin")
+    assert(values["Account ID"] == "123456789012")
+    assert(values["Role"] == "AdministratorAccess")
+    assert(values["Caller Identity"] == "operator@example.com")
+    assert(!fields.map(\.value).contains("unrelated-gcp@example.com"))
+
+    let token = CloudProfile(
+        provider: .kubernetes,
+        name: "token-cluster",
+        roleName: "token-user",
+        kubernetesCredentialKind: .bearerToken,
+        hasKubernetesCredentials: true
+    )
+    let tokenFields = ConnectionIdentityPresentation.fields(for: token)
+    assert(tokenFields.contains(ConnectionIdentityField(label: "Credential Type", value: "Bearer token")))
+    assert(!tokenFields.contains { $0.label == "Caller Identity" || $0.label == "AWS Profile" })
+
+    let gcp = CloudProfile(provider: .gcp, name: "analytics", accountID: "demo-project", roleName: "configured@example.com")
+    let gcpFields = ConnectionIdentityPresentation.fields(for: gcp, resolvedIdentity: "verified@example.com")
+    assert(gcpFields.contains(ConnectionIdentityField(label: "Signed-in Account", value: "verified@example.com")))
+
+    let azure = CloudProfile(provider: .azure, name: "production", accountID: "subscription-id", roleName: "tenant-id")
+    let azureFields = ConnectionIdentityPresentation.fields(for: azure, resolvedIdentity: "verified@example.com")
+    assert(azureFields.contains(ConnectionIdentityField(label: "Signed-in Account", value: "verified@example.com")))
 }
 
 func testLocalDiagnosticsAreBoundedAndExcludeIdentity() throws {
@@ -89,6 +169,8 @@ func testDiscoveryRetainsContextsDuringFileReplacement() throws {
 @MainActor
 func runKubeIndentedDiscoveryTests() throws {
     try testDiscoveryRetainsContextsDuringFileReplacement()
+    testConnectionIdentityPresentationIsProviderScoped()
+    try testDiscoveryDoesNotTreatForeignExecEnvironmentAsAWSLink()
     try testExplicitKubeAWSProfileDoesNotUseGlobalSelection()
     try testLocalDiagnosticsAreBoundedAndExcludeIdentity()
     try testIndentedKubeDiscoveryPreservesEntriesAndUsers()

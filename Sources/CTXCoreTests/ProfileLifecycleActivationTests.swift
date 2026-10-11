@@ -667,6 +667,7 @@ func testBrokerDisconnectFailuresPreserveStateAndSanitizeErrors() async throws {
         let commandsBeforeVerify = await runner.allCommands()
         assert(commandsBeforeVerify.first == testCase.expected)
         assert(store.profiles.first(where: { $0.id == profile.id })?.status == .needsLogin)
+        assert(!store.connectedProfiles.contains(where: { $0.id == profile.id }))
         assert(store.activeKubeContext.isEmpty)
         assert(store.presentation == nil)
         assert(!store.lastMessage.contains("private-value"))

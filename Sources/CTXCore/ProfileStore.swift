@@ -51,6 +51,8 @@ public final class ProfileStore: ObservableObject {
     @Published public var updateCheckMessage = ""
     /// Identity (e.g. SSO email / IAM user) resolved from the active AWS caller-identity.
     @Published public internal(set) var awsIdentity = ""
+    /// Sanitized, provider-scoped identity labels. Kept in memory only; never tokens or raw command output.
+    @Published public internal(set) var resolvedConnectionIdentities: [String: String] = [:]
     /// Expiry of the active AWS SSO session, used for the live countdown in the toolbar.
     @Published public internal(set) var activeAWSExpiresAt: Date?
     @Published public internal(set) var availableAWSRoles: [String: [String]] = [:]

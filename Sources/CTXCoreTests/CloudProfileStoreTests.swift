@@ -34,7 +34,6 @@ func testProfileCommandServiceBuildsProviderCommands() async {
         ["az", "account", "set", "--subscription", "sub-123"],
         ["aws", "sso", "login", "--profile", "dev", "--no-browser"],
         ["gcloud", "auth", "login", "--configuration", "dev", "--account", "dev@example.com"],
-        ["gcloud", "auth", "application-default", "login"],
         ["az", "login", "--tenant", "tenant-123"],
         ["az", "account", "set", "--subscription", "sub-123"],
         ["aws", "sso", "logout"],
@@ -49,6 +48,31 @@ func testProfileCommandServiceBuildsProviderCommands() async {
     assert(kubectl.commands.map(\.arguments) == [
         ["--context", "dev-context", "get", "--raw=/version", "--request-timeout=10s"]
     ])
+}
+
+func testGCPLoginsRemainConfigurationScopedAndDoNotRewriteADC() async {
+    let runner = RecordingCloudRunner()
+    let service = ProfileCommandService(runner: runner)
+    let development = CloudProfile(
+        provider: .gcp,
+        name: "development",
+        roleName: "developer@example.com"
+    )
+    let production = CloudProfile(
+        provider: .gcp,
+        name: "production",
+        accountID: "operator@example.com"
+    )
+
+    _ = await service.login(development)
+    _ = await service.login(production)
+
+    let commands = await runner.allCommands()
+    assert(commands == [
+        ["gcloud", "auth", "login", "--configuration", "development", "--account", "developer@example.com"],
+        ["gcloud", "auth", "login", "--configuration", "production", "--account", "operator@example.com"]
+    ])
+    assert(!commands.contains { $0.contains("application-default") })
 }
 
 func testProfileCommandServiceReadsProviderPathsPerCommand() async {
@@ -1278,6 +1302,7 @@ func testHPAAndPVCResourceKinds() throws {
 @MainActor
 func runCloudProfileStoreTests() async throws {
     await testProfileCommandServiceBuildsProviderCommands()
+    await testGCPLoginsRemainConfigurationScopedAndDoNotRewriteADC()
     await testProfileCommandServiceReadsProviderPathsPerCommand()
     try await testProfileStoreReloadsLiveAWSPathAndSharesCommandDefaults()
     await testKubernetesVerificationPreservesContextPathAndProviderEnvironment()

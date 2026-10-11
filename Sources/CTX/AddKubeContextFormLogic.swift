@@ -97,9 +97,9 @@ extension AddKubeContextView {
                 authMode = .strongDM
             } else if profile.usesTeleport {
                 authMode = .teleport
-            } else if profile.provider == .aws || cluster.contains("arn:aws:eks") || name.lowercased().contains("eks") || profile.name.lowercased().contains("aws") {
+            } else if profile.kubernetesLinkedProfile != nil || cluster.contains("arn:aws:eks") {
                 authMode = .cloudIAM
-                awsProfile = store.activeAWSProfile
+                awsProfile = profile.kubernetesLinkedProfile ?? ""
                 awsRegion = Self.eksRegion(from: cluster)
             } else if cluster.contains("gke") || name.lowercased().contains("gke") {
                 authMode = .gcpGKE

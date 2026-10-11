@@ -18,11 +18,11 @@ struct KubeAuthRemediationCardView: View {
             || (errorMessage?.lowercased().contains("sso") ?? false)
     }
 
-    private var awsProfileName: String {
+    private var awsProfileName: String? {
         if let linked = profile.kubernetesLinkedProfile, !linked.isEmpty {
             return linked
         }
-        return profile.name
+        return nil
     }
 
     private var isAWSRBACDenied: Bool {
@@ -54,15 +54,19 @@ struct KubeAuthRemediationCardView: View {
             if isAWSRBACDenied {
                 return "AWS IAM credentials were authenticated, but this EKS cluster's Access Entries or aws-auth ConfigMap did not recognize the identity. Verify cluster RBAC permissions or check if this cluster requires StrongDM access."
             }
-            return "EKS cluster access requires an active AWS SSO session for '\(awsProfileName)'. Re-authenticate to access cluster resources."
+            if let awsProfileName {
+                return "EKS cluster access requires an active AWS SSO session for '\(awsProfileName)'. Re-authenticate to access cluster resources."
+            }
+            return "EKS authentication failed, but this context does not identify an AWS profile. Add an explicit profile before starting SSO so CTX does not authenticate the wrong account."
         }
         return "Kubernetes credential plugin requires Single Sign-On (Okta / SAML) authentication to generate an access token."
     }
 
-    private var commandSnippet: String {
+    private var commandSnippet: String? {
         if isSDM { return "sdm connect \(profile.name)" }
         if isTeleport { return "tsh kube login \(profile.name)" }
-        if isAWSSSO { return "aws sso login --profile \(awsProfileName)" }
+        if isAWSSSO, let awsProfileName { return "aws sso login --profile \(awsProfileName)" }
+        if isAWSSSO { return nil }
         return "kubectl get --raw=/version --context \(profile.name)"
     }
 
@@ -86,15 +90,17 @@ struct KubeAuthRemediationCardView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack {
-                Text(commandSnippet)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.primary)
-                Spacer()
-                CTXCopyIconButton(value: commandSnippet)
+            if let commandSnippet {
+                HStack {
+                    Text(commandSnippet)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    CTXCopyIconButton(value: commandSnippet)
+                }
+                .padding(8)
+                .background(Color.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
             }
-            .padding(8)
-            .background(Color.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
 
             HStack(spacing: 10) {
                 Button(action: onConnect) {
@@ -132,13 +138,15 @@ struct KubeAuthRemediationCardView: View {
                     .buttonStyle(CTXSecondaryButton())
                 }
 
-                Button {
-                    onRunTerminal(commandSnippet)
-                } label: {
-                    Label("Open in Terminal", systemImage: "terminal.fill")
+                if let commandSnippet {
+                    Button {
+                        onRunTerminal(commandSnippet)
+                    } label: {
+                        Label("Open in Terminal", systemImage: "terminal.fill")
+                    }
+                    .buttonStyle(CTXSecondaryButton())
+                    .disabled(isVerifying)
                 }
-                .buttonStyle(CTXSecondaryButton())
-                .disabled(isVerifying)
             }
             .controlSize(.small)
         }

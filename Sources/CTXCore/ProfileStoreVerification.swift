@@ -39,15 +39,8 @@ extension ProfileStore {
 
         if effectiveConnection {
             verificationErrors[profile.id] = nil
-            if profile.provider == .aws {
-                if profile.name == activeAWSProfile,
-                   let identity = awsCredentials.identity(fromCallerIdentityOutput: result.output) {
-                    if awsIdentity != identity {
-                        awsIdentity = identity
-                    }
-                }
-            }
-
+            await updateResolvedIdentity(for: profile, verificationResult: result)
+            guard canPublishLifecycleState(for: profile.id, operationID: operationID) else { return false }
         }
 
         let newStatus: ProfileStatus
@@ -58,6 +51,7 @@ extension ProfileStore {
             newStatus = .connected
             verificationErrors[profile.id] = nil
         } else {
+            resolvedConnectionIdentities[profile.id] = nil
             if profile.provider == .aws && profile.name == activeAWSProfile {
                 awsIdentity = ""
             }
@@ -96,6 +90,42 @@ extension ProfileStore {
             report(result.output, title: "Verification Failed", from: origin)
         }
         return effectiveConnection
+    }
+
+    private func updateResolvedIdentity(
+        for profile: CloudProfile,
+        verificationResult: CommandResult
+    ) async {
+        switch profile.provider {
+        case .aws:
+            if let identity = awsCredentials.identity(fromCallerIdentityOutput: verificationResult.output) {
+                resolvedConnectionIdentities[profile.id] = identity
+                if profile.name == activeAWSProfile {
+                    awsIdentity = identity
+                }
+            }
+        case .gcp:
+            let account = verificationResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !account.isEmpty {
+                resolvedConnectionIdentities[profile.id] = account
+            }
+        case .azure:
+            if let account = ProviderIdentityParser.azureAccount(from: verificationResult.output) {
+                resolvedConnectionIdentities[profile.id] = account
+            }
+        case .kubernetes:
+            guard resolvedConnectionIdentities[profile.id] == nil,
+                  let linkedName = profile.kubernetesLinkedProfile,
+                  let awsProfile = profiles.first(where: { $0.provider == .aws && $0.name == linkedName }) else {
+                return
+            }
+            let identityResult = await profileCommands.verify(awsProfile)
+            guard identityResult.exitCode == 0,
+                  let identity = awsCredentials.identity(fromCallerIdentityOutput: identityResult.output) else {
+                return
+            }
+            resolvedConnectionIdentities[profile.id] = identity
+        }
     }
 
     internal func canPublishLifecycleState(for profileID: String, operationID: UUID?) -> Bool {

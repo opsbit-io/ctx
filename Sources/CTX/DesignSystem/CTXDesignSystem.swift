@@ -809,6 +809,8 @@ public struct VisualEffectBackground: NSViewRepresentable {
     }
 
     public func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.blendingMode = blendingMode
+        nsView.state = .active
         nsView.material = colorScheme == .light ? .underWindowBackground : material
     }
 }

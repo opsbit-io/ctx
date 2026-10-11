@@ -125,6 +125,7 @@ public final class KubeConfigDiscoveryService: Sendable {
         var currentUserName = ""
         var currentCredentialKind: KubernetesCredentialKind = .none
         var currentUserHasCredentials = false
+        var currentExecCommand: String?
         var currentAWSProfile: String?
         var nextArgIsAWSProfile = false
         var inAWSProfileEnv = false
@@ -159,11 +160,14 @@ public final class KubeConfigDiscoveryService: Sendable {
             users[currentUserName] = KubeCredentialMetadata(
                 kind: currentCredentialKind,
                 isPresent: currentUserHasCredentials,
-                awsProfile: currentAWSProfile
+                awsProfile: currentExecCommand.map { URL(fileURLWithPath: $0).lastPathComponent } == "aws"
+                    ? currentAWSProfile
+                    : nil
             )
             currentUserName = ""
             currentCredentialKind = .none
             currentUserHasCredentials = false
+            currentExecCommand = nil
             currentAWSProfile = nil
             nextArgIsAWSProfile = false
             inAWSProfileEnv = false
@@ -235,10 +239,10 @@ public final class KubeConfigDiscoveryService: Sendable {
 
             switch section {
             case "contexts":
-                if trimmed.hasPrefix("- name:") {
+                if trimmed.hasPrefix("- name:"), indent == itemIndent {
                     commitContext()
                     currentContextName = value(after: "- name:", in: trimmed)
-                } else if trimmed.hasPrefix("name:") {
+                } else if trimmed.hasPrefix("name:"), indent == itemIndent.map({ $0 + 2 }) {
                     currentContextName = value(after: "name:", in: trimmed)
                 } else if trimmed.hasPrefix("cluster:") {
                     currentCluster = value(after: "cluster:", in: trimmed)
@@ -248,10 +252,10 @@ public final class KubeConfigDiscoveryService: Sendable {
                     currentNamespace = value(after: "namespace:", in: trimmed)
                 }
             case "clusters":
-                if trimmed.hasPrefix("- name:") {
+                if trimmed.hasPrefix("- name:"), indent == itemIndent {
                     commitCluster()
                     currentClusterName = value(after: "- name:", in: trimmed)
-                } else if trimmed.hasPrefix("name:") {
+                } else if trimmed.hasPrefix("name:"), indent == itemIndent.map({ $0 + 2 }) {
                     currentClusterName = value(after: "name:", in: trimmed)
                 } else if trimmed.hasPrefix("server:") {
                     currentServer = value(after: "server:", in: trimmed)
@@ -259,10 +263,10 @@ public final class KubeConfigDiscoveryService: Sendable {
                     currentSkipTLSVerification = value(after: "insecure-skip-tls-verify:", in: trimmed).lowercased() == "true"
                 }
             case "users":
-                if trimmed.hasPrefix("- name:") {
+                if trimmed.hasPrefix("- name:"), indent == itemIndent {
                     commitUser()
                     currentUserName = value(after: "- name:", in: trimmed)
-                } else if trimmed.hasPrefix("name:") {
+                } else if trimmed.hasPrefix("name:"), indent == itemIndent.map({ $0 + 2 }) {
                     currentUserName = value(after: "name:", in: trimmed)
                 } else if trimmed.hasPrefix("token:") {
                     currentCredentialKind = .bearerToken
@@ -273,6 +277,9 @@ public final class KubeConfigDiscoveryService: Sendable {
                 } else if trimmed.hasPrefix("exec:") || trimmed.hasPrefix("command:") {
                     currentCredentialKind = .execPlugin
                     currentUserHasCredentials = true
+                    if trimmed.hasPrefix("command:") {
+                        currentExecCommand = value(after: "command:", in: trimmed)
+                    }
                 } else if trimmed.hasPrefix("client-certificate")
                     || trimmed.hasPrefix("client-key") {
                     currentCredentialKind = .clientCertificate

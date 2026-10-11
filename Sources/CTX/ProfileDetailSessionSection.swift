@@ -48,35 +48,36 @@ extension ProfileDetailView {
                     .frame(minHeight: 38)
                 }
 
-                Divider()
-                    .padding(.leading, 16)
-                HStack {
-                    Text("Identity")
-                        .foregroundStyle(fieldLabelStyle)
-                    Spacer()
-                    if connectionIsActive {
-                        HStack(spacing: 6) {
-                            let identityText = !profile.accountID.isEmpty
-                                ? profile.accountID
-                                : (!profile.roleName.isEmpty ? profile.roleName : profile.name)
-                            let initials = identityText.prefix(2).uppercased()
-                            Text(store.isActive(profile) ? store.activeIdentityInitials : initials)
-                                .font(.system(.caption2, weight: .bold))
-                                .foregroundColor(Color.accentColor)
-                                .frame(width: 18, height: 18)
-                                .background(Color.accentColor.opacity(0.15), in: Circle())
-
-                            Text(store.isActive(profile) ? store.activeIdentityLabel : identityText)
+                if connectionIsActive {
+                    ForEach(store.connectionIdentityFields(for: currentProfile)) { field in
+                        Divider()
+                            .padding(.leading, 16)
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(field.label)
+                                .foregroundStyle(fieldLabelStyle)
+                            Spacer(minLength: 20)
+                            Text(field.value)
                                 .fontWeight(.medium)
+                                .multilineTextAlignment(.trailing)
+                                .textSelection(.enabled)
                         }
-                    } else {
+                        .padding(.horizontal, 18)
+                        .frame(minHeight: 38)
+                    }
+                } else {
+                    Divider()
+                        .padding(.leading, 16)
+                    HStack {
+                        Text("Identity")
+                            .foregroundStyle(fieldLabelStyle)
+                        Spacer()
                         Text("Not Active")
                             .foregroundStyle(fieldLabelStyle)
                             .fontWeight(.medium)
                     }
+                    .padding(.horizontal, 18)
+                    .frame(minHeight: 38)
                 }
-                .padding(.horizontal, 18)
-                .frame(minHeight: 38)
             }
             .ctxGlassCard()
         }

@@ -21,7 +21,11 @@ struct ContentView: View {
             DetailPane(store: store)
                 .background(colorScheme == .light ? Color(NSColor.windowBackgroundColor) : Color(white: 0.12).opacity(0.65))
         }
-        .background(VisualEffectBackground(material: .hudWindow, blendingMode: .behindWindow))
+        // This window contains a live, scrolling SwiftUI List. In-window blending
+        // keeps that content in the same compositor hierarchy; behind-window
+        // blending on a fully transparent window can leave stale list layers visible
+        // after disclosure groups move or collapse.
+        .background(VisualEffectBackground(material: .hudWindow, blendingMode: .withinWindow))
         .ctxChromelessWindow()
         .preferredColorScheme(currentAppearance.colorScheme)
         .profileLifecyclePresentationHost(store: store, surface: .mainWindow)

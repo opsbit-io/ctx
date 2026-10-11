@@ -37,11 +37,12 @@ public final class ProfileCommandService: Sendable {
         await run(["gcloud", "config", "configurations", "activate", profile.name])
     }
 
-    /// Refreshes Application Default Credentials directly — the credential a
-    /// kubectl exec plugin like `gke-gcloud-auth-plugin` actually reads, and
-    /// which `login(_:)` only reaches indirectly through one named gcloud
-    /// configuration. Unscoped on purpose: it works even when CTX has no GCP
-    /// profile on file for whatever context needs it refreshed.
+    /// Refreshes the process-wide Application Default Credentials store.
+    ///
+    /// This is deliberately separate from `login(_:)`: ADC is shared by client
+    /// libraries and cannot be isolated by a named gcloud configuration. Callers
+    /// must expose this as an explicit remediation action rather than mutating it
+    /// while connecting an ordinary GCP profile.
     public func refreshGCPApplicationDefaultCredentials(onOutput: (@Sendable (String) -> Void)? = nil) async -> CommandResult {
         await runLogin(["gcloud", "auth", "application-default", "login"], onOutput: onOutput)
     }
@@ -69,14 +70,10 @@ public final class ProfileCommandService: Sendable {
             if !emailCandidate.isEmpty {
                 args.append(contentsOf: ["--account", emailCandidate])
             }
-            let loginResult = await runLogin(args, onOutput: onOutput)
-            guard loginResult.exitCode == 0 else { return loginResult }
-            // `gcloud auth login` only refreshes the CLI's own credentials. Any client
-            // library or external tool (Terraform, gcloud SDKs, other agents) reads
-            // Application Default Credentials instead, which live in a separate file
-            // and need their own login step — otherwise they keep failing even though
-            // CTX and `gcloud` itself look fully connected.
-            return await runLogin(["gcloud", "auth", "application-default", "login"], onOutput: onOutput)
+            // A named configuration scopes its account selection, while ADC is one
+            // shared credential store. Never rewrite ADC as a side effect of connecting
+            // a profile: another project may intentionally use a different identity.
+            return await runLogin(args, onOutput: onOutput)
         case .azure:
             var args = ["az", "login"]
             if !profile.roleName.isEmpty {
@@ -192,7 +189,7 @@ public final class ProfileCommandService: Sendable {
                     output: "GCP credentials for \(account) have expired or were revoked. Run gcloud auth login."
                 )
             }
-            return CommandResult(exitCode: 0, output: "")
+            return result
         case .azure:
             let target = profile.accountID.isEmpty ? profile.name : profile.accountID
             let result = await run([
@@ -214,7 +211,7 @@ public final class ProfileCommandService: Sendable {
                     output: "Azure credentials for \(target) have expired or require re-authentication. Run az login."
                 )
             }
-            return CommandResult(exitCode: 0, output: "")
+            return result
         case .kubernetes:
             if profile.usesStrongDM {
                 let statusResult = await run(["sdm", "status"])

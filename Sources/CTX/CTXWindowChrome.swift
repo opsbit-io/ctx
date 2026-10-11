@@ -23,8 +23,15 @@ enum CTXWindowChrome {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.styleMask.insert(.fullSizeContentView)
-        window.isMovableByWindowBackground = true
-        window.backgroundColor = .clear
+        // Let AppKit reserve dragging for the real title-bar area. Enabling
+        // background dragging on a full-size SwiftUI content view can consume
+        // mouse-down events before plain buttons, menus, list rows and toggles
+        // receive them, making otherwise enabled controls appear intermittent.
+        window.isMovableByWindowBackground = false
+        // A real backing color gives SwiftUI/AppKit something deterministic to
+        // repaint when translucent list rows move. The visual-effect view still
+        // supplies the material above it.
+        window.backgroundColor = .windowBackgroundColor
         window.titlebarSeparatorStyle = .none
     }
 }

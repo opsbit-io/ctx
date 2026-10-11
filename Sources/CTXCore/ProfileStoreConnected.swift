@@ -8,7 +8,10 @@ extension ProfileStore {
     /// second account look disconnected while its credentials were valid.
     public var connectedProfiles: [CloudProfile] {
         profiles
-            .filter { $0.status == .connected }
+            // Disconnect is a user-owned boundary. Hide the row as soon as that
+            // intent is recorded, even if an older verification/discovery snapshot
+            // still carries `.connected` for one render pass.
+            .filter { $0.status == .connected && !manuallyDisconnectedProfiles.contains($0.id) }
             .sorted { ($0.provider.rawValue, $0.name) < ($1.provider.rawValue, $1.name) }
     }
 }
