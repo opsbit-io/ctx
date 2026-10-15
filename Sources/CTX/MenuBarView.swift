@@ -269,8 +269,8 @@ struct MenuBarView: View {
     }
 
     private var activeKubernetesContext: KubernetesContextProfile? {
-        guard !store.activeKubeContext.isEmpty else { return nil }
-        return store.kubernetesContexts.first { $0.contextName == store.activeKubeContext }
+        guard let active = store.activeProfile(for: .kubernetes) else { return nil }
+        return store.kubernetesContexts.first { $0.contextName == active.name }
     }
 
     private func providerBinding(for provider: CloudProvider) -> Binding<Bool> {

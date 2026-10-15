@@ -45,7 +45,7 @@ extension ProfileDetailView {
     }
 
     var canOpenWorkspace: Bool {
-        profile.provider == .kubernetes && currentProfile.status != .missingCli
+        profile.provider == .kubernetes && currentProfile.status == .connected
     }
 
     var kubernetesContext: KubernetesContextProfile? {
