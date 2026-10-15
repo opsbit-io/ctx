@@ -101,6 +101,16 @@ extension KubeConfigMutationService {
             guard !region.isEmpty else {
                 throw KubeConfigMutationError.invalid("AWS region is required for EKS authentication")
             }
+            // If clusterName is an ARN like "arn:aws:eks:region:account:cluster/cluster-name",
+            // aws eks get-token MUST receive the short cluster identifier, not the full ARN.
+            let sanitizedClusterName: String = {
+                if clusterName.contains(":cluster/") {
+                    return clusterName.components(separatedBy: ":cluster/").last ?? clusterName
+                } else if clusterName.hasPrefix("arn:aws:eks:") {
+                    return clusterName.components(separatedBy: "/").last ?? clusterName
+                }
+                return clusterName
+            }()
             var execArgs = ["config", "set-credentials", userName]
             if isReplacement {
                 // Clear a static token in the same write that installs the exec
@@ -114,7 +124,7 @@ extension KubeConfigMutationService {
                 "--exec-arg=eks",
                 "--exec-arg=get-token",
                 "--exec-arg=--cluster-name",
-                "--exec-arg=\(clusterName)",
+                "--exec-arg=\(sanitizedClusterName)",
                 "--exec-arg=--region",
                 "--exec-arg=\(region)"
             ])
