@@ -49,17 +49,14 @@ struct TopologyNodeInspectorView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: node.kind.systemImage)
-                .foregroundStyle(node.kind.topologyTint)
-                .frame(width: 28, height: 28)
-                .background(node.kind.topologyTint.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+        HStack(alignment: .top, spacing: 10) {
+            KubernetesIconView(nodeKind: node.effectiveKind, size: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(node.name)
                     .font(.system(.caption, weight: .bold))
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                Text("\(node.kind.title) · \(node.namespace)")
+                Text("\(node.effectiveKind.title) · \(node.namespace)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -157,9 +154,7 @@ struct TopologyNodeInspectorView: View {
                 Image(systemName: inbound ? "arrow.left" : "arrow.right")
                     .font(.system(.caption2, weight: .bold))
                     .foregroundStyle(.secondary)
-                Image(systemName: neighbour.kind.systemImage)
-                    .foregroundStyle(neighbour.kind.topologyTint)
-                    .frame(width: 14)
+                KubernetesIconView(nodeKind: neighbour.effectiveKind, size: 14, filledBackground: false)
                 Text(label)
                     .font(.caption2)
                     .lineLimit(1)
@@ -178,26 +173,23 @@ struct TopologyNodeInspectorView: View {
 
     private var actions: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if group == nil {
-                Button {
-                    onOpenInspector()
-                } label: {
-                    Label("Open in Inspector", systemImage: "sidebar.trailing")
+            TopologyInspectorSectionTitle(text: "ACTIONS")
+            if let onPortForward {
+                Button(action: onPortForward) {
+                    Label("Port Forward…", systemImage: "network")
                 }
                 .buttonStyle(CTXSecondaryButton())
             }
             if let onShowPods {
                 Button(action: onShowPods) {
-                    Label("Show in Pods", systemImage: "circle.grid.3x3")
+                    Label("Show pods in table", systemImage: "circle.grid.3x3")
                 }
                 .buttonStyle(CTXSecondaryButton())
             }
-            if let onPortForward {
-                Button(action: onPortForward) {
-                    Label("Port Forward", systemImage: "arrowshape.turn.up.right")
-                }
-                .buttonStyle(CTXSecondaryButton())
+            Button(action: onOpenInspector) {
+                Label("Open in inspector", systemImage: "arrow.up.right.square")
             }
+            .buttonStyle(CTXSecondaryButton())
         }
     }
 }

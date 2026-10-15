@@ -93,6 +93,7 @@ public final class ProfileStore: ObservableObject {
     internal var profileOperations: [String: ProfileLifecycleOperation] = [:]
     internal var pendingKubeContextActivation: KubeContextActivationIntent?
     internal var deferredPresentation: DeferredProfilePresentation?
+    internal var authOutputBuffers: [UUID: String] = [:]
     internal let brokerPollDelay: @Sendable () async throws -> Void
     internal let backgroundServicesEnabled: Bool
 

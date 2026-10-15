@@ -40,14 +40,22 @@ public enum FolderEditorIntent: Identifiable, Sendable {
     }
 }
 
-public struct InAppAuthPresentation: Sendable {
+public struct InAppAuthPresentation: Sendable, Equatable {
     public let url: URL
+    public let userCode: String?
     public let email: String?
     public let profileID: String
     public let operationID: UUID
 
-    public init(url: URL, email: String?, profileID: String, operationID: UUID) {
+    public init(
+        url: URL,
+        userCode: String? = nil,
+        email: String? = nil,
+        profileID: String,
+        operationID: UUID
+    ) {
         self.url = url
+        self.userCode = userCode
         self.email = email
         self.profileID = profileID
         self.operationID = operationID

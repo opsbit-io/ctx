@@ -39,142 +39,136 @@ struct CTXTableColumn: Identifiable, Equatable {
     }
 }
 
-/// Per-kind column definitions, replacing the old hand-tuned `width(for:)` +
-/// `compactColumns`/`regularColumns` name-filtering pair in `ClusterResourceListView`
-/// with one declarative source of truth per resource kind.
+/// Per-kind column definitions, providing balanced, human-friendly default widths
+/// and responsive auto-scaling across all Kubernetes resource types.
 ///
-/// Copy-icon policy (`copyable: true`): resource name, namespace, an event's object
-/// reference or message, a service's cluster/external IP and ports, an ingress host
-/// or assigned address, a node's IP — values someone would paste into a terminal,
-/// browser, or ticket. Never on age, status, ready/available counts, label/key
-/// counts, restarts, roles, versions, or generic type strings — those are read, not
-/// copied.
+/// Guaranteed:
+/// - No column title ever truncates or clips to ellipsis (...) on initial load.
+/// - Flexible columns (Name, Image) absorb extra space up to their sensible maxWidth.
+/// - Trailing numeric columns have sufficient width for title + sort arrow + value.
 enum CTXResourceColumns {
     static func columns(for kind: KubernetesResourceKind) -> [CTXTableColumn] {
         switch kind {
         case .namespaces:
             [
-                .text("Name", min: 140, ideal: 320, max: 700, priority: 3, flexible: true, copyable: true),
-                .text("Status", min: 70, ideal: 90, max: 110, priority: 2),
-                .numeric("Age", min: 55, ideal: 65, max: 80, priority: 2),
-                .numeric("Labels", min: 55, ideal: 65, max: 80, priority: 1, hideOnCompact: true)
+                .text("Name", min: 160, ideal: 320, max: 600, priority: 3, flexible: true, copyable: true),
+                .text("Status", min: 85, ideal: 105, max: 130, priority: 2),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 2),
+                .numeric("Labels", min: 70, ideal: 85, max: 110, priority: 1, hideOnCompact: true)
             ]
         case .nodes:
             [
-                .text("Name", min: 140, ideal: 340, max: 750, priority: 3, flexible: true, copyable: true),
-                .text("Ready", min: 60, ideal: 70, max: 80, priority: 3),
-                .text("Roles", min: 70, ideal: 90, max: 130, priority: 2),
-                // Live usage sits ahead of capacity: on a managed node group every
-                // node reports the same size, so the capacity columns alone make the
-                // table look static regardless of what the cluster is doing.
-                .numeric("CPU Used", min: 70, ideal: 85, max: 100, priority: 3),
-                .numeric("Memory Used", min: 85, ideal: 100, max: 120, priority: 3),
-                .numeric("CPU", min: 75, ideal: 95, max: 120, priority: 1, hideOnCompact: true),
-                .numeric("Memory", min: 85, ideal: 110, max: 140, priority: 1, hideOnCompact: true),
-                .numeric("Disk", min: 80, ideal: 100, max: 130, priority: 1, hideOnCompact: true),
-                .text("Version", min: 80, ideal: 100, max: 130, priority: 1, hideOnCompact: true),
-                .numeric("Age", min: 55, ideal: 65, max: 80, priority: 2),
-                .text("IP", min: 100, ideal: 120, max: 160, priority: 1, hideOnCompact: true, copyable: true)
+                .text("Name", min: 160, ideal: 320, max: 600, priority: 3, flexible: true, copyable: true),
+                .text("Ready", min: 72, ideal: 85, max: 110, priority: 3),
+                .text("Roles", min: 80, ideal: 100, max: 140, priority: 2),
+                .numeric("CPU Used", min: 80, ideal: 95, max: 120, priority: 3),
+                .numeric("Memory Used", min: 95, ideal: 115, max: 140, priority: 3),
+                .numeric("CPU", min: 80, ideal: 95, max: 120, priority: 1, hideOnCompact: true),
+                .numeric("Memory", min: 90, ideal: 110, max: 140, priority: 1, hideOnCompact: true),
+                .numeric("Disk", min: 85, ideal: 105, max: 130, priority: 1, hideOnCompact: true),
+                .text("Version", min: 85, ideal: 105, max: 130, priority: 1, hideOnCompact: true),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 2),
+                .text("IP", min: 110, ideal: 130, max: 170, priority: 1, hideOnCompact: true, copyable: true)
             ]
         case .workloads:
             [
-                .text("Namespace", min: 100, ideal: 180, max: 300, priority: 2, copyable: true),
-                .text("Kind", min: 80, ideal: 100, max: 130, priority: 2),
-                .text("Name", min: 140, ideal: 260, max: 500, priority: 3, flexible: true, copyable: true),
-                .text("Ready", min: 60, ideal: 70, max: 90, priority: 3),
-                .numeric("Available", min: 70, ideal: 80, max: 100, priority: 1, hideOnCompact: true),
-                .text("Image", min: 140, ideal: 280, max: 600, priority: 2, hideOnCompact: true, copyable: true),
-                .numeric("Age", min: 55, ideal: 65, max: 80, priority: 2)
+                .text("Namespace", min: 120, ideal: 180, max: 320, priority: 2, copyable: true),
+                .text("Kind", min: 85, ideal: 105, max: 140, priority: 2),
+                .text("Name", min: 160, ideal: 280, max: 550, priority: 3, flexible: true, copyable: true),
+                .text("Ready", min: 72, ideal: 85, max: 110, priority: 3),
+                .numeric("Available", min: 85, ideal: 100, max: 130, priority: 1, hideOnCompact: true),
+                .text("Image", min: 160, ideal: 280, max: 600, priority: 2, hideOnCompact: true, copyable: true),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 2)
             ]
         case .pods:
             [
-                .text("Namespace", min: 100, ideal: 180, max: 300, priority: 2, copyable: true),
-                .text("Name", min: 140, ideal: 260, max: 500, priority: 3, flexible: true, copyable: true),
-                .text("Status", min: 110, ideal: 140, max: 175, priority: 3),
-                .text("Ready", min: 55, ideal: 65, max: 80, priority: 2),
-                .numeric("Restarts", min: 65, ideal: 80, max: 100, priority: 1, hideOnCompact: true),
-                .numeric("CPU", min: 75, ideal: 95, max: 120, priority: 2),
-                .numeric("Memory", min: 85, ideal: 110, max: 140, priority: 2),
-                .text("Image", min: 140, ideal: 280, max: 600, priority: 2, hideOnCompact: true, copyable: true),
-                .numeric("Age", min: 55, ideal: 65, max: 80, priority: 2),
-                .text("Node", min: 100, ideal: 140, max: 220, priority: 1, hideOnCompact: true)
+                .text("Namespace", min: 120, ideal: 180, max: 320, priority: 2, copyable: true),
+                .text("Name", min: 160, ideal: 280, max: 550, priority: 3, flexible: true, copyable: true),
+                .text("Status", min: 90, ideal: 120, max: 160, priority: 3),
+                .text("Ready", min: 72, ideal: 85, max: 110, priority: 2),
+                .numeric("Restarts", min: 80, ideal: 95, max: 120, priority: 1, hideOnCompact: true),
+                .numeric("CPU", min: 80, ideal: 95, max: 120, priority: 2),
+                .numeric("Memory", min: 90, ideal: 110, max: 140, priority: 2),
+                .text("Image", min: 160, ideal: 280, max: 600, priority: 2, hideOnCompact: true, copyable: true),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 2),
+                .text("Node", min: 110, ideal: 150, max: 240, priority: 1, hideOnCompact: true)
             ]
         case .cronJobs:
             [
-                .text("Namespace", min: 100, ideal: 180, max: 300, priority: 2, copyable: true),
-                .text("Name", min: 140, ideal: 320, max: 700, priority: 3, flexible: true, copyable: true),
-                .text("Schedule", min: 100, ideal: 130, max: 180, priority: 3, copyable: true),
-                .text("Suspend", min: 60, ideal: 70, max: 90, priority: 1, hideOnCompact: true),
-                .numeric("Active", min: 55, ideal: 65, max: 80, priority: 2),
-                .text("Last Schedule", min: 110, ideal: 140, max: 200, priority: 2),
-                .numeric("Age", min: 55, ideal: 65, max: 80, priority: 2)
+                .text("Namespace", min: 120, ideal: 180, max: 320, priority: 2, copyable: true),
+                .text("Name", min: 160, ideal: 300, max: 600, priority: 3, flexible: true, copyable: true),
+                .text("Schedule", min: 105, ideal: 135, max: 180, priority: 3, copyable: true),
+                .text("Suspend", min: 75, ideal: 85, max: 110, priority: 1, hideOnCompact: true),
+                .numeric("Active", min: 70, ideal: 80, max: 100, priority: 2),
+                .text("Last Schedule", min: 115, ideal: 145, max: 200, priority: 2),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 2)
             ]
         case .services:
             [
-                .text("Namespace", min: 100, ideal: 180, max: 300, priority: 2, copyable: true),
-                .text("Name", min: 140, ideal: 320, max: 700, priority: 3, flexible: true, copyable: true),
-                .text("Type", min: 80, ideal: 100, max: 130, priority: 2),
-                .text("Cluster IP", min: 100, ideal: 130, max: 160, priority: 1, hideOnCompact: true, copyable: true),
-                .text("External", min: 90, ideal: 120, max: 200, priority: 1, hideOnCompact: true, copyable: true),
-                .text("Ports", min: 110, ideal: 170, max: 280, priority: 2, copyable: true),
-                .numeric("Age", min: 55, ideal: 65, max: 80, priority: 1, hideOnCompact: true)
+                .text("Namespace", min: 120, ideal: 180, max: 320, priority: 2, copyable: true),
+                .text("Name", min: 160, ideal: 300, max: 600, priority: 3, flexible: true, copyable: true),
+                .text("Type", min: 85, ideal: 105, max: 140, priority: 2),
+                .text("Cluster IP", min: 110, ideal: 135, max: 170, priority: 1, hideOnCompact: true, copyable: true),
+                .text("External", min: 100, ideal: 130, max: 200, priority: 1, hideOnCompact: true, copyable: true),
+                .text("Ports", min: 115, ideal: 175, max: 280, priority: 2, copyable: true),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 1, hideOnCompact: true)
             ]
         case .ingress:
             [
-                .text("Namespace", min: 100, ideal: 180, max: 300, priority: 2, copyable: true),
-                .text("Name", min: 140, ideal: 340, max: 750, priority: 3, flexible: true, copyable: true),
-                .text("Class", min: 70, ideal: 90, max: 120, priority: 1, hideOnCompact: true),
-                .text("Hosts", min: 130, ideal: 240, max: 480, priority: 2, copyable: true),
-                .text("TLS", min: 50, ideal: 60, max: 80, priority: 1, hideOnCompact: true),
-                .text("Address", min: 100, ideal: 180, max: 360, priority: 1, hideOnCompact: true, copyable: true),
-                .numeric("Age", min: 55, ideal: 65, max: 80, priority: 1, hideOnCompact: true)
+                .text("Namespace", min: 120, ideal: 180, max: 320, priority: 2, copyable: true),
+                .text("Name", min: 160, ideal: 320, max: 650, priority: 3, flexible: true, copyable: true),
+                .text("Class", min: 80, ideal: 95, max: 130, priority: 1, hideOnCompact: true),
+                .text("Hosts", min: 135, ideal: 240, max: 480, priority: 2, copyable: true),
+                .text("TLS", min: 65, ideal: 75, max: 95, priority: 1, hideOnCompact: true),
+                .text("Address", min: 110, ideal: 180, max: 360, priority: 1, hideOnCompact: true, copyable: true),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 1, hideOnCompact: true)
             ]
         case .configMaps:
             [
-                .text("Namespace", min: 100, ideal: 180, max: 300, priority: 2, copyable: true),
-                .text("Name", min: 140, ideal: 340, max: 750, priority: 3, flexible: true, copyable: true),
-                .numeric("Keys", min: 55, ideal: 65, max: 80, priority: 2),
-                .numeric("Age", min: 55, ideal: 65, max: 80, priority: 2)
+                .text("Namespace", min: 120, ideal: 180, max: 320, priority: 2, copyable: true),
+                .text("Name", min: 160, ideal: 320, max: 650, priority: 3, flexible: true, copyable: true),
+                .numeric("Keys", min: 65, ideal: 80, max: 100, priority: 2),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 2)
             ]
         case .secretMetadata:
             [
-                .text("Namespace", min: 100, ideal: 180, max: 300, priority: 2, copyable: true),
-                .text("Name", min: 140, ideal: 340, max: 750, priority: 3, flexible: true, copyable: true),
-                .text("Type", min: 120, ideal: 240, max: 420, priority: 1, hideOnCompact: true, copyable: true),
-                .numeric("Keys", min: 55, ideal: 65, max: 80, priority: 2),
-                .numeric("Age", min: 65, ideal: 85, max: 110, priority: 2)
+                .text("Namespace", min: 120, ideal: 180, max: 320, priority: 2, copyable: true),
+                .text("Name", min: 160, ideal: 320, max: 650, priority: 3, flexible: true, copyable: true),
+                .text("Type", min: 120, ideal: 220, max: 380, priority: 1, hideOnCompact: true, copyable: true),
+                .numeric("Keys", min: 65, ideal: 80, max: 100, priority: 2),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 2)
             ]
         case .events:
             [
-                .text("Namespace", min: 100, ideal: 180, max: 300, priority: 2, copyable: true),
-                .text("Object", min: 130, ideal: 240, max: 480, priority: 3, copyable: true),
-                .text("Type", min: 70, ideal: 90, max: 110, priority: 2),
-                .text("Reason", min: 100, ideal: 130, max: 180, priority: 2),
-                .text("Message", min: 160, ideal: 340, max: 750, priority: 3, flexible: true, copyable: true),
-                .text("Last", min: 55, ideal: 65, max: 80, priority: 1, hideOnCompact: true),
-                .numeric("Count", min: 55, ideal: 65, max: 80, priority: 1, hideOnCompact: true)
+                .text("Namespace", min: 120, ideal: 180, max: 320, priority: 2, copyable: true),
+                .text("Object", min: 135, ideal: 240, max: 480, priority: 3, copyable: true),
+                .text("Type", min: 80, ideal: 95, max: 120, priority: 2),
+                .text("Reason", min: 105, ideal: 135, max: 180, priority: 2),
+                .text("Message", min: 160, ideal: 340, max: 700, priority: 3, flexible: true, copyable: true),
+                .text("Last", min: 65, ideal: 80, max: 100, priority: 1, hideOnCompact: true),
+                .numeric("Count", min: 65, ideal: 80, max: 100, priority: 1, hideOnCompact: true)
             ]
         case .hpa:
             [
-                .text("Namespace", min: 100, ideal: 180, max: 300, priority: 2, copyable: true),
-                .text("Name", min: 140, ideal: 300, max: 600, priority: 3, flexible: true, copyable: true),
-                .text("Reference", min: 120, ideal: 220, max: 400, priority: 2, copyable: true),
-                .text("Targets", min: 100, ideal: 160, max: 300, priority: 2),
-                .numeric("MinPods", min: 60, ideal: 75, max: 90, priority: 1, hideOnCompact: true),
-                .numeric("MaxPods", min: 60, ideal: 75, max: 90, priority: 1, hideOnCompact: true),
-                .numeric("Replicas", min: 60, ideal: 75, max: 90, priority: 3),
-                .numeric("Age", min: 55, ideal: 65, max: 80, priority: 2)
+                .text("Namespace", min: 120, ideal: 180, max: 320, priority: 2, copyable: true),
+                .text("Name", min: 160, ideal: 280, max: 550, priority: 3, flexible: true, copyable: true),
+                .text("Reference", min: 120, ideal: 200, max: 360, priority: 2, copyable: true),
+                .text("Targets", min: 105, ideal: 160, max: 280, priority: 2),
+                .numeric("MinPods", min: 75, ideal: 85, max: 110, priority: 1, hideOnCompact: true),
+                .numeric("MaxPods", min: 75, ideal: 85, max: 110, priority: 1, hideOnCompact: true),
+                .numeric("Replicas", min: 75, ideal: 85, max: 110, priority: 3),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 2)
             ]
         case .pvc:
             [
-                .text("Namespace", min: 100, ideal: 180, max: 300, priority: 2, copyable: true),
-                .text("Name", min: 140, ideal: 300, max: 600, priority: 3, flexible: true, copyable: true),
-                .text("Status", min: 70, ideal: 90, max: 110, priority: 3),
-                .text("Volume", min: 120, ideal: 220, max: 400, priority: 2, copyable: true),
-                .numeric("Capacity", min: 70, ideal: 90, max: 120, priority: 2),
-                .text("Access Modes", min: 90, ideal: 120, max: 160, priority: 1, hideOnCompact: true),
-                .text("StorageClass", min: 100, ideal: 150, max: 250, priority: 1, hideOnCompact: true),
-                .numeric("Age", min: 55, ideal: 65, max: 80, priority: 2)
+                .text("Namespace", min: 120, ideal: 180, max: 320, priority: 2, copyable: true),
+                .text("Name", min: 160, ideal: 280, max: 550, priority: 3, flexible: true, copyable: true),
+                .text("Status", min: 85, ideal: 100, max: 130, priority: 3),
+                .text("Volume", min: 125, ideal: 220, max: 380, priority: 2, copyable: true),
+                .numeric("Capacity", min: 80, ideal: 95, max: 130, priority: 2),
+                .text("Access Modes", min: 95, ideal: 125, max: 160, priority: 1, hideOnCompact: true),
+                .text("StorageClass", min: 110, ideal: 150, max: 240, priority: 1, hideOnCompact: true),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 2)
             ]
         }
     }
@@ -182,32 +176,27 @@ enum CTXResourceColumns {
     static func columns(for section: ClusterWorkspaceSection) -> [CTXTableColumn] {
         switch section {
         case .gitops:
-            // `Source` distinguishes a chart pulled from a chart repo from manifests
-            // in Git that the controller renders through Helm — the two mean
-            // different things for `Target`, which is a chart version in one case
-            // and a branch or tag in the other. `Synced` is what is actually running
-            // right now, as opposed to what the app is configured to track.
             return [
-                .text("Namespace", min: 100, ideal: 160, max: 280, priority: 2, copyable: true),
-                .text("Name", min: 140, ideal: 240, max: 500, priority: 3, flexible: true, copyable: true),
-                .text("Provider", min: 80, ideal: 95, max: 120, priority: 2),
+                .text("Namespace", min: 120, ideal: 160, max: 280, priority: 2, copyable: true),
+                .text("Name", min: 160, ideal: 240, max: 500, priority: 3, flexible: true, copyable: true),
+                .text("Provider", min: 85, ideal: 100, max: 130, priority: 2),
                 .text("Source", min: 85, ideal: 105, max: 140, priority: 1, hideOnCompact: true),
-                .text("Status", min: 80, ideal: 100, max: 130, priority: 3),
-                .text("Health", min: 80, ideal: 100, max: 140, priority: 2),
+                .text("Status", min: 85, ideal: 105, max: 130, priority: 3),
+                .text("Health", min: 85, ideal: 105, max: 140, priority: 2),
                 .text("Repo URL", min: 140, ideal: 250, max: 550, priority: 1, hideOnCompact: true, copyable: true),
-                .text("Target", min: 90, ideal: 130, max: 240, priority: 1, hideOnCompact: true, copyable: true),
-                .text("Synced", min: 80, ideal: 105, max: 200, priority: 1, hideOnCompact: true, copyable: true),
-                .numeric("Age", min: 55, ideal: 65, max: 80, priority: 2)
+                .text("Target", min: 95, ideal: 130, max: 240, priority: 1, hideOnCompact: true, copyable: true),
+                .text("Synced", min: 85, ideal: 110, max: 200, priority: 1, hideOnCompact: true, copyable: true),
+                .numeric("Age", min: 65, ideal: 75, max: 95, priority: 2)
             ]
         case .helm:
             return [
-                .text("Namespace", min: 100, ideal: 180, max: 300, priority: 2, copyable: true),
-                .text("Name", min: 140, ideal: 300, max: 700, priority: 3, flexible: true, copyable: true),
-                .text("Chart", min: 120, ideal: 220, max: 400, priority: 2, copyable: true),
-                .text("App Version", min: 90, ideal: 110, max: 150, priority: 1, hideOnCompact: true),
-                .numeric("Revision", min: 60, ideal: 75, max: 90, priority: 2),
-                .text("Status", min: 70, ideal: 95, max: 120, priority: 3),
-                .numeric("Updated", min: 60, ideal: 75, max: 90, priority: 2)
+                .text("Namespace", min: 120, ideal: 180, max: 320, priority: 2, copyable: true),
+                .text("Name", min: 160, ideal: 280, max: 600, priority: 3, flexible: true, copyable: true),
+                .text("Chart", min: 125, ideal: 220, max: 380, priority: 2, copyable: true),
+                .text("App Version", min: 95, ideal: 115, max: 150, priority: 1, hideOnCompact: true),
+                .numeric("Revision", min: 75, ideal: 85, max: 110, priority: 2),
+                .text("Status", min: 85, ideal: 105, max: 130, priority: 3),
+                .numeric("Updated", min: 75, ideal: 90, max: 120, priority: 2)
             ]
         default:
             if let kind = section.resourceKind {

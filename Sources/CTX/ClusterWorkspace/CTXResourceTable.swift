@@ -3,28 +3,25 @@ import CTXCore
 import SwiftUI
 
 /// One column with its resolved on-screen width.
-///
-/// A struct rather than a `(CTXTableColumn, CGFloat)` tuple: tuples cannot conform
-/// to `Equatable`, so a row holding an array of them could never be compared, and
-/// SwiftUI had to re-evaluate every visible row on any change to the table.
 struct ResolvedColumn: Identifiable, Equatable {
     var id: String { column.id }
     let column: CTXTableColumn
     let width: CGFloat
 }
 
-/// Shared, kind-agnostic resource table. Column set, widths, alignment, and which
-/// field gets a copy icon all come from `CTXResourceColumns` — no per-screen
-/// hand-rolled table code.
+/// Shared, kind-agnostic resource table with Apple-grade interactive column sorting,
+/// real-time drag resizing, and fluid responsiveness.
+///
+/// Complies with Apple HIG:
+/// - Click column header to sort (with native macOS sort indicator chevrons).
+/// - Clean, decluttered headers (no superfluous in-column dropdown menus).
+/// - Proportional auto-resolution that avoids artificial giant gaps and prevents text clipping.
+/// - Drag handles between columns for seamless manual width adjustments.
 struct CTXResourceTable: View {
     let targetKind: KubernetesResourceKind?
     let targetSection: ClusterWorkspaceSection?
     let rows: [KubernetesResourceRow]
     let selectedRowID: String?
-    /// Whether the workspace is currently scoped to "All namespaces." When false
-    /// (a single namespace is selected), every visible row shares the same
-    /// namespace, so the Namespace column is dropped — it wouldn't say anything a
-    /// row doesn't already imply, just take up space and add a column to scan.
     let showsNamespaceColumn: Bool
     let onSelect: (KubernetesResourceRow) -> Void
 
@@ -44,56 +41,55 @@ struct CTXResourceTable: View {
         self.onSelect = onSelect
     }
 
-    /// The pane width, minus the page padding either side. Supplied by the
-    /// workspace rather than measured here.
     @Environment(\.workspaceContentWidth) private var paneWidth
     @State private var measuredWidth: CGFloat = 0
 
+    // Interactive Column Sorting & Resizing State
+    @State private var sortColumnKey: String? = nil
+    @State private var sortAscending: Bool = true
+    @State private var customWidths: [String: CGFloat] = [:]
+    @State private var hoveredHeaderKey: String? = nil
+
     private var availableWidth: CGFloat {
-        // Prefer the pane's own measurement; fall back to whatever this view manages
-        // to measure, and only then to a conservative default.
         let fromPane = paneWidth - ClusterWorkspaceLayout.pagePadding * 2
         if fromPane > 200 { return fromPane }
         return measuredWidth > 200 ? measuredWidth : 900
     }
+
     @State private var hoveredRowID: String?
-    /// How many rows are currently built.
-    ///
-    /// The table shares the page's scroll view, so its `LazyVStack` has no vertical
-    /// viewport to be lazy against and builds every row it is handed — roughly ten
-    /// cell views each. Handing it the whole list means thousands of views
-    /// constructed synchronously on the main thread the moment a fetch lands or a
-    /// section changes, which is the freeze. A window that grows as the last row
-    /// comes into view keeps that bounded without changing the layout.
     @State private var displayLimit = Self.initialWindow
 
     static let initialWindow = 100
     private static let windowGrowth = 150
-    /// How far from the end of the built rows the next batch starts building.
-    ///
-    /// Triggering on the very last row means the user reaches the bottom, stops, and
-    /// only then waits for more — a visible hitch on every batch. Starting a batch
-    /// while there is still roughly a screenful left means it is usually ready
-    /// before they get there.
     private static let growthLeadRows = 40
 
-    private var visibleRows: [KubernetesResourceRow] {
-        rows.count <= displayLimit ? rows : Array(rows.prefix(displayLimit))
+    // Sorted rows
+    private var processedRows: [KubernetesResourceRow] {
+        var result = rows
+        if let sortKey = sortColumnKey {
+            result.sort { r1, r2 in
+                let v1 = r1.cells[sortKey] ?? ""
+                let v2 = r2.cells[sortKey] ?? ""
+                let comp = CTXTableValueParser.compare(key: sortKey, a: v1, b: v2)
+                let asc = comp == .orderedAscending
+                return sortAscending ? asc : !asc
+            }
+        }
+        return result
     }
 
-    /// The row whose appearance starts building the next batch.
+    private var visibleRows: [KubernetesResourceRow] {
+        processedRows.count <= displayLimit ? processedRows : Array(processedRows.prefix(displayLimit))
+    }
+
     private var growthTriggerRowID: String? {
-        guard displayLimit < rows.count else { return nil }
+        guard displayLimit < processedRows.count else { return nil }
         let index = max(0, visibleRows.count - Self.growthLeadRows)
         return visibleRows.indices.contains(index) ? visibleRows[index].id : visibleRows.last?.id
     }
-    /// Cached result of `resolve()` — only recomputed when `availableWidth` or
-    /// `allColumns` changes, not on every hover or selection state update.
+
     @State private var resolvedColumns: [ResolvedColumn] = []
 
-    /// Derived from the table's own measured width rather than passed in from the
-    /// caller — one less piece of width-tracking state duplicated across views.
-    /// Uses the same breakpoint as the rest of the workspace (`ClusterWorkspaceLayoutMode`).
     private var isCompact: Bool {
         ClusterWorkspaceLayoutMode(width: availableWidth) == .compact
     }
@@ -110,19 +106,16 @@ struct CTXResourceTable: View {
         return showsNamespaceColumn ? columns : columns.filter { $0.key != "Namespace" }
     }
 
+    private let rowHorizontalPadding: CGFloat = 14
+    private let columnSpacing: CGFloat = 12
+
     var body: some View {
-        let resolved = resolvedColumns.isEmpty ? Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact) : resolvedColumns
+        let resolved = resolvedColumns.isEmpty ? Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact, customWidths: customWidths) : resolvedColumns
         let calculatedWidth = resolved.reduce(rowHorizontalPadding * 2) { $0 + $1.width } + CGFloat(max(0, resolved.count - 1)) * columnSpacing
         let contentWidth = max(availableWidth, calculatedWidth)
 
         return VStack(alignment: .leading, spacing: 0) {
             CTXGlassPanel(padding: 0) {
-                // The page's own scroll view supplies the vertical axis, so this one
-                // only handles horizontal overflow — exactly as before. Giving the
-                // table a second, vertical scroll view is what would let the
-                // `LazyVStack` build only visible rows, but nesting one inside the
-                // page scroll view broke the layout of every list screen. The caller
-                // bounds the row count instead.
                 ScrollView(.horizontal) {
                     LazyVStack(spacing: 0) {
                         headerRow(resolved)
@@ -147,18 +140,18 @@ struct CTXResourceTable: View {
                             .equatable()
                             .onAppear {
                                 guard row.id == growthTriggerRowID else { return }
-                                displayLimit = min(displayLimit + Self.windowGrowth, rows.count)
+                                displayLimit = min(displayLimit + Self.windowGrowth, processedRows.count)
                             }
                             Divider().opacity(0.45)
                         }
 
-                        if rows.count > visibleRows.count {
+                        if processedRows.count > visibleRows.count {
                             HStack {
                                 Spacer()
                                 Button {
-                                    displayLimit = rows.count
+                                    displayLimit = processedRows.count
                                 } label: {
-                                    Text("Show all \(rows.count) items")
+                                    Text("Show all \(processedRows.count) items")
                                         .font(.system(size: 12.5, weight: .semibold))
                                         .foregroundStyle(Color.accentColor)
                                 }
@@ -183,60 +176,109 @@ struct CTXResourceTable: View {
         .onPreferenceChange(TableWidthPreferenceKey.self) { newWidth in
             guard abs(newWidth - measuredWidth) > 1 else { return }
             measuredWidth = newWidth
-            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact)
+            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact, customWidths: customWidths)
         }
         .onChange(of: paneWidth) { _, _ in
-            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact)
+            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact, customWidths: customWidths)
         }
         .onChange(of: targetSection) { _, _ in
             displayLimit = Self.initialWindow
-            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact)
+            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact, customWidths: customWidths)
         }
         .onChange(of: targetKind) { _, _ in
             displayLimit = Self.initialWindow
-            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact)
+            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact, customWidths: customWidths)
         }
         .onChange(of: rows) { _, newRows in
-            // A filter that narrows the list must not leave the window wider than
-            // the list itself, and a fresh fetch starts from the top again.
             displayLimit = min(max(displayLimit, Self.initialWindow), max(newRows.count, Self.initialWindow))
         }
         .onChange(of: showsNamespaceColumn) { _, _ in
-            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact)
+            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact, customWidths: customWidths)
         }
     }
 
-    private let rowHorizontalPadding: CGFloat = 14
-    private let columnSpacing: CGFloat = 12
+    // MARK: - Native Header Row with Click-to-Sort & Drag Resize
 
     private func headerRow(_ resolved: [ResolvedColumn]) -> some View {
         HStack(spacing: columnSpacing) {
             ForEach(resolved) { resolvedColumn in
-                Text(resolvedColumn.column.title)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(width: resolvedColumn.width, alignment: resolvedColumn.column.alignment == .trailing ? .trailing : .leading)
+                HStack(spacing: 0) {
+                    columnHeaderCell(resolvedColumn)
+
+                    // Drag-to-resize divider on the right of each column
+                    CTXColumnResizeDivider(
+                        onDelta: { delta in
+                            let current = customWidths[resolvedColumn.column.key] ?? resolvedColumn.width
+                            let newW = max(resolvedColumn.column.minWidth, min(resolvedColumn.column.maxWidth, current + delta))
+                            customWidths[resolvedColumn.column.key] = newW
+                            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact, customWidths: customWidths)
+                        },
+                        onReset: {
+                            customWidths.removeValue(forKey: resolvedColumn.column.key)
+                            resolvedColumns = Self.resolve(allColumns, availableWidth: availableWidth, isCompact: isCompact, customWidths: customWidths)
+                        }
+                    )
+                    .frame(width: 8)
+                }
             }
         }
         .padding(.horizontal, rowHorizontalPadding)
-        .padding(.vertical, 9)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.02))
     }
 
+    private func columnHeaderCell(_ resolvedColumn: ResolvedColumn) -> some View {
+        let col = resolvedColumn.column
+        let isSorted = sortColumnKey == col.key
+        let isHovered = hoveredHeaderKey == col.key
+        let cellWidth = max(col.minWidth - 8, resolvedColumn.width - 8)
 
+        return Button {
+            toggleSort(for: col.key)
+        } label: {
+            HStack(spacing: 4) {
+                if col.alignment == .trailing { Spacer(minLength: 0) }
 
+                Text(col.title)
+                    .font(.system(size: 11.5, weight: isSorted ? .bold : .semibold))
+                    .foregroundStyle(isSorted ? Color.accentColor : (isHovered ? .primary : .secondary))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
 
+                if isSorted {
+                    Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8.5, weight: .heavy))
+                        .foregroundStyle(Color.accentColor)
+                }
 
+                if col.alignment == .leading { Spacer(minLength: 0) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            hoveredHeaderKey = hovering ? col.key : nil
+        }
+        .help("Click to sort by \(col.title)")
+        .frame(width: cellWidth, alignment: col.alignment == .trailing ? .trailing : .leading)
+    }
 
+    private func toggleSort(for key: String) {
+        if sortColumnKey == key {
+            if sortAscending {
+                sortAscending = false
+            } else {
+                sortColumnKey = nil
+            }
+        } else {
+            sortColumnKey = key
+            sortAscending = !CTXTableValueParser.prefersDescendingDefault(key: key)
+        }
+    }
 
-    /// Column set + width resolution for one available width:
-    /// 1. Drop `hideOnCompact` columns when compact.
-    /// 2. If even minimum widths don't fit, drop lowest-priority columns one at a
-    ///    time (their data is still reachable — the inspector shows everything).
-    /// 3. Give every remaining column its ideal width, then hand any leftover space
-    ///    entirely to the one `isFlexible` column so the table fills the workspace
-    ///    instead of floating as a narrow island on wide windows.
-    static func resolve(_ columns: [CTXTableColumn], availableWidth: CGFloat, isCompact: Bool) -> [ResolvedColumn] {
+    // MARK: - Proportional Column Resolution Engine
+
+    static func resolve(_ columns: [CTXTableColumn], availableWidth: CGFloat, isCompact: Bool, customWidths: [String: CGFloat] = [:]) -> [ResolvedColumn] {
         var candidates = isCompact ? columns.filter { !$0.hideOnCompact } : columns
         if candidates.isEmpty { candidates = columns }
 
@@ -249,36 +291,93 @@ struct CTXResourceTable: View {
         }.map(\.element)
 
         while candidates.count > 1 {
-            let minSum = candidates.reduce(0, { $0 + $1.minWidth }) + spacingAndPadding(candidates.count)
+            let minSum = candidates.reduce(0) { sum, col in
+                let w = customWidths[col.id] ?? col.minWidth
+                return sum + max(col.minWidth, w)
+            } + spacingAndPadding(candidates.count)
             guard minSum > availableWidth, let dropped = byPriorityAscending.first(where: { candidate in candidates.contains(where: { $0.id == candidate.id }) }) else { break }
             candidates.removeAll { $0.id == dropped.id }
             byPriorityAscending.removeAll { $0.id == dropped.id }
         }
 
-        // Keep the kind's declared left-to-right order for whatever survived.
         let kept = Set(candidates.map(\.id))
         let ordered = columns.filter { kept.contains($0.id) }
 
-        let idealSum = ordered.reduce(0, { $0 + $1.idealWidth }) + spacingAndPadding(ordered.count)
+        var widths: [CGFloat] = ordered.map { col in
+            if let custom = customWidths[col.id] {
+                return max(col.minWidth, min(col.maxWidth, custom))
+            }
+            return col.idealWidth
+        }
+
+        let idealSum = widths.reduce(0, +) + spacingAndPadding(ordered.count)
         let extra = availableWidth - idealSum
 
-        guard extra > 0 else {
-            return ordered.map { ResolvedColumn(column: $0, width: $0.idealWidth) }
-        }
+        if extra > 0 {
+            var remainingExtra = extra
 
-        let flexibleIndices = ordered.enumerated().filter {
-            $0.element.isFlexible || $0.element.key == "Name" || $0.element.key == "Node" || $0.element.key == "Namespace"
-        }.map(\.offset)
+            // 1. Give non-flexible columns without custom widths modest breathing room up to their maxWidth
+            let nonFlexIndices = ordered.enumerated().filter { idx, col in
+                customWidths[col.id] == nil && !(col.isFlexible || col.key == "Name" || col.key == "Image" || col.key == "Message") && widths[idx] < col.maxWidth
+            }.map(\.offset)
 
-        var widths = ordered.map { $0.idealWidth }
-        if !flexibleIndices.isEmpty {
-            let addPerCol = extra / CGFloat(flexibleIndices.count)
-            for idx in flexibleIndices {
-                widths[idx] += addPerCol
+            if !nonFlexIndices.isEmpty {
+                let share = min(remainingExtra / CGFloat(nonFlexIndices.count * 2), 25.0)
+                for idx in nonFlexIndices {
+                    let col = ordered[idx]
+                    let allowedGrowth = max(0, col.maxWidth - widths[idx])
+                    let growth = min(share, allowedGrowth)
+                    widths[idx] += growth
+                    remainingExtra -= growth
+                }
             }
-        } else if let flexibleIndex = ordered.firstIndex(where: { $0.isFlexible }) {
-            widths[flexibleIndex] += extra
+
+            // 2. Flexible columns absorb all remaining extra width so the table fills edge-to-edge
+            let flexIndices = ordered.enumerated().filter { idx, col in
+                customWidths[col.id] == nil && (col.isFlexible || col.key == "Name" || col.key == "Image" || col.key == "Message")
+            }.map(\.offset)
+
+            if !flexIndices.isEmpty && remainingExtra > 0 {
+                let addPerCol = remainingExtra / CGFloat(flexIndices.count)
+                for idx in flexIndices {
+                    widths[idx] += addPerCol
+                }
+                remainingExtra = 0
+            } else if remainingExtra > 0 {
+                // 3. Fallback: distribute remaining across all columns without custom widths
+                let unconstrained = ordered.enumerated().filter { idx, col in
+                    customWidths[col.id] == nil
+                }.map(\.offset)
+                if !unconstrained.isEmpty {
+                    let addPerCol = remainingExtra / CGFloat(unconstrained.count)
+                    for idx in unconstrained {
+                        widths[idx] += addPerCol
+                    }
+                    remainingExtra = 0
+                }
+            }
+        } else if extra < 0 {
+            // Compress flexible/unconstrained columns down towards minWidth when space is tight
+            var deficit = -extra
+            let shrinkableIndices = ordered.enumerated().filter { idx, col in
+                customWidths[col.id] == nil && widths[idx] > col.minWidth
+            }.sorted { a, b in
+                let aFlex = ordered[a.offset].isFlexible || ordered[a.offset].key == "Name"
+                let bFlex = ordered[b.offset].isFlexible || ordered[b.offset].key == "Name"
+                if aFlex != bFlex { return aFlex }
+                return a.element.minWidth < b.element.minWidth
+            }.map(\.offset)
+
+            for idx in shrinkableIndices {
+                guard deficit > 0 else { break }
+                let col = ordered[idx]
+                let canShrink = widths[idx] - col.minWidth
+                let shrink = min(deficit, canShrink)
+                widths[idx] -= shrink
+                deficit -= shrink
+            }
         }
+
         return zip(ordered, widths).map { ResolvedColumn(column: $0, width: $1) }
     }
 }
@@ -292,15 +391,10 @@ private struct TableWidthPreferenceKey: PreferenceKey {
 }
 
 /// Isolated row view — giving each row its own struct lets SwiftUI identity-diff
-/// rows independently. Without this, any @State change on `CTXResourceTable`
-/// (e.g. hoveredRowID) caused *all* rows to re-render in the same body call.
+/// rows independently.
 private struct ResourceRowView: View, Equatable {
     let row: KubernetesResourceRow
     let resolved: [ResolvedColumn]
-    /// Booleans rather than the selected/hovered ids: with the ids, every row in
-    /// the list held a property that changed whenever *any* row was hovered, so
-    /// SwiftUI had to re-evaluate all of them. Only the two rows whose own state
-    /// actually flipped change value now.
     let isSelected: Bool
     let isHovered: Bool
     let rowHorizontalPadding: CGFloat
@@ -308,9 +402,6 @@ private struct ResourceRowView: View, Equatable {
     let onSelect: (KubernetesResourceRow) -> Void
     let onHoverChange: (Bool) -> Void
 
-    /// Closures are never equal, so the synthesized conformance would always report
-    /// "changed". Comparing only the data lets SwiftUI skip rows that really are
-    /// unchanged — the whole point of splitting rows into their own view.
     static func == (lhs: ResourceRowView, rhs: ResourceRowView) -> Bool {
         lhs.row == rhs.row
             && lhs.isSelected == rhs.isSelected
@@ -332,8 +423,6 @@ private struct ResourceRowView: View, Equatable {
         .background(background, in: Rectangle())
         .onTapGesture { onSelect(row) }
         .onHover { onHoverChange($0) }
-        // Otherwise VoiceOver stops once per column per row, and never
-        // announces that tapping the row selects it.
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
     }
@@ -349,6 +438,8 @@ private struct ResourceRowView: View, Equatable {
     private func cell(column: CTXTableColumn, width: CGFloat) -> some View {
         let value = row.cells[column.key] ?? "-"
         HStack(spacing: 4) {
+            if column.alignment == .trailing { Spacer(minLength: 0) }
+
             if (column.key == "Status" || column.key == "Ready") && value != "-" {
                 statusBadge(value, warning: row.warning)
             } else if (column.key == "CPU" || column.key == "Memory" || column.key == "Disk") && value != "-" {
@@ -361,16 +452,10 @@ private struct ResourceRowView: View, Equatable {
                     .foregroundStyle(row.warning && column.key == "Status" ? .orange : .primary)
                     .lineLimit(column.key == "Message" ? 2 : 1)
                     .truncationMode(.middle)
-                    // A tooltip installs its own tracking area, so this is limited
-                    // to the columns whose text is actually long enough to be
-                    // elided rather than applied to every cell in the table.
                     .help(column.isFlexible || column.key == "Message" ? value : "")
                     .multilineTextAlignment(column.alignment == .trailing ? .trailing : .leading)
             }
 
-            // Built only while the row is hovered. Keeping it always-present at
-            // zero opacity meant a stateful Button, with its own hover tracking,
-            // existed for every copyable cell of every visible row.
             if (column.key == "Repo URL" || column.key == "Repository") && value != "-" && isHovered {
                 if let url = GitRepositoryURLHelper.webURL(from: value, revision: row.cells["Target"]) {
                     Button {
@@ -388,6 +473,8 @@ private struct ResourceRowView: View, Equatable {
             if column.copyable && value != "-" && isHovered {
                 CTXCopyIconButton(value: value)
             }
+
+            if column.alignment == .leading { Spacer(minLength: 0) }
         }
         .frame(width: width, alignment: column.alignment == .trailing ? .trailing : .leading)
     }

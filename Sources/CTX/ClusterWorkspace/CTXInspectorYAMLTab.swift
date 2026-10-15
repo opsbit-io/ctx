@@ -28,8 +28,8 @@ struct CTXInspectorYAMLTab: View {
             if !selection.kind.supportsInspectionYAML {
                 unavailable
             } else if viewModel.isLoadingYAML && !viewModel.isEditingYAML {
-                CTXGlassPanel {
-                    CTXLoadingStateView(title: "Loading YAML", message: "Fetching live resource manifest from cluster.")
+                CTXGlassPanel(padding: 0) {
+                    CTXLoadingStateView(title: "Loading YAML", message: "Fetching live resource manifest from cluster.", centered: true)
                 }
             } else if viewModel.isEditingYAML {
                 yamlEditorPanel
@@ -38,8 +38,8 @@ struct CTXInspectorYAMLTab: View {
             } else if let result = viewModel.yamlResult {
                 issue(result)
             } else {
-                CTXGlassPanel {
-                    CTXLoadingStateView(title: "Loading YAML", message: "Running an inspection get command.")
+                CTXGlassPanel(padding: 0) {
+                    CTXLoadingStateView(title: "Loading YAML", message: "Running an inspection get command.", centered: true)
                 }
             }
         }

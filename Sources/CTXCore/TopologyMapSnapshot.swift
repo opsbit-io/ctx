@@ -5,15 +5,18 @@ public struct TopologyMapFilter: Equatable, Sendable {
     public let searchText: String
     public let includesInactive: Bool
     public let needsAttentionOnly: Bool
+    public let category: TopologyNodeCategory?
 
     public init(
         searchText: String = "",
         includesInactive: Bool = false,
-        needsAttentionOnly: Bool = false
+        needsAttentionOnly: Bool = false,
+        category: TopologyNodeCategory? = nil
     ) {
         self.searchText = searchText
         self.includesInactive = includesInactive
         self.needsAttentionOnly = needsAttentionOnly
+        self.category = category
     }
 
     public var selector: TopologySelector? { TopologySelector(searchText) }
@@ -117,6 +120,11 @@ public struct TopologyMapSnapshot: Sendable {
                 related.formUnion(scoped.descendants(of: node.id))
             }
             scoped = scoped.filtered(nodeIDs: related)
+        }
+
+        if let category = filter.category {
+            let matchingIDs = Set(scoped.nodes.filter { $0.category == category }.map(\.id))
+            scoped = scoped.filtered(nodeIDs: matchingIDs)
         }
 
         if let selector = filter.selector {

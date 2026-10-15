@@ -30,6 +30,7 @@ enum ClusterWorkspaceSection: String, CaseIterable, Identifiable, Hashable {
     case gitops = "GitOps"
     case helm = "Helm"
     case topology = "Map"
+    case finops = "FinOps"
     case logs = "Logs"
     case exports = "Exports"
     case diff = "Diff"
@@ -39,7 +40,7 @@ enum ClusterWorkspaceSection: String, CaseIterable, Identifiable, Hashable {
 
     var category: ClusterWorkspaceCategory {
         switch self {
-        case .overview, .topology:
+        case .overview, .topology, .finops:
             return .workspace
         case .workloads, .pods, .cronjobs:
             return .workloads
@@ -58,6 +59,7 @@ enum ClusterWorkspaceSection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .overview: return .blue
         case .topology: return .indigo
+        case .finops: return .green
         case .workloads: return .purple
         case .pods: return .cyan
         case .cronjobs: return .orange
@@ -84,6 +86,7 @@ enum ClusterWorkspaceSection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .overview: return "rectangle.3.group.fill"
         case .topology: return "point.topleft.down.to.point.bottomright.curvepath"
+        case .finops: return "dollarsign.circle.fill"
         case .workloads: return "shippingbox.fill"
         case .pods: return "circle.grid.3x3.fill"
         case .cronjobs: return "clock.arrow.2.circlepath"
@@ -125,6 +128,7 @@ enum ClusterWorkspaceSection: String, CaseIterable, Identifiable, Hashable {
         case .gitops: "arrow.triangle.pull"
         case .helm: "shippingbox.circle"
         case .topology: "point.topleft.down.to.point.bottomright.curvepath"
+        case .finops: "chart.pie.fill"
         case .logs: "text.alignleft"
         case .exports: "square.and.arrow.down"
         case .diff: "arrow.left.arrow.right"

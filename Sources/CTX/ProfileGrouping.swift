@@ -28,19 +28,7 @@ enum ProfileGrouping {
     /// its profiles; otherwise only the matching profiles are kept, and a folder
     /// with no matches drops out.
     static func filtered(_ groups: [ProfileGroup], query: String) -> [ProfileGroup] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return groups }
-        return groups.compactMap { group in
-            if group.folder.name.localizedCaseInsensitiveContains(needle)
-                || group.folder.provider.rawValue.localizedCaseInsensitiveContains(needle) {
-                return group
-            }
-            let matches = group.profiles.filter {
-                $0.name.localizedCaseInsensitiveContains(needle)
-                    || $0.provider.rawValue.localizedCaseInsensitiveContains(needle)
-            }
-            return matches.isEmpty ? nil : ProfileGroup(folder: group.folder, profiles: matches)
-        }
+        ProfileSearchMatcher.filteredGroups(groups, query: query)
     }
 
     /// The filtered groups rolled up by provider, skipping providers with nothing

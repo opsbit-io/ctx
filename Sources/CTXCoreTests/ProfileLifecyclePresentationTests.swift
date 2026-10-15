@@ -353,7 +353,124 @@ func testAsyncLifecycleFailureRetainsOrigin() async throws {
 }
 
 @MainActor
+func testDeviceAuthCodeExtraction() throws {
+    // 1. AWS SSO standard CLI output with newlines
+    let awsOutput = """
+    Using a browser, open the following URL:
+
+    https://device.sso.eu-central-1.amazonaws.com/
+
+    and enter the code:
+
+    ABCD-EFGH
+    """
+    assert(ProfileStore.extractAuthCode(from: awsOutput) == "ABCD-EFGH")
+
+    // 2. AWS SSO with "Then enter the code:"
+    let awsAltOutput = """
+    If the browser does not open or you wish to use a different device to authorize this request, open the following URL:
+
+    https://device.sso.us-east-1.amazonaws.com/
+
+    Then enter the code:
+
+    1234-5678
+    """
+    assert(ProfileStore.extractAuthCode(from: awsAltOutput) == "1234-5678")
+
+    // 3. Azure device login
+    let azureOutput = "To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code CND38DFLK to authenticate."
+    assert(ProfileStore.extractAuthCode(from: azureOutput) == "CND38DFLK")
+
+    // 4. URL query parameter
+    let urlWithCode = "https://device.sso.eu-central-1.amazonaws.com/?user_code=QWER-TYUI"
+    assert(ProfileStore.extractAuthCode(from: urlWithCode) == "QWER-TYUI")
+
+    // 5. Generic prompt
+    let genericOutput = "Please verify your session with code: ABCD-WXYZ"
+    assert(ProfileStore.extractAuthCode(from: genericOutput) == "ABCD-WXYZ")
+}
+
+@MainActor
+func testDeviceAuthURLAugmentation() throws {
+    let rawAWSURL = URL(string: "https://device.sso.eu-central-1.amazonaws.com/")!
+    let augmentedAWS = ProfileStore.urlWithUserCode(rawAWSURL, code: "ABCD-EFGH")
+    assert(augmentedAWS.absoluteString == "https://device.sso.eu-central-1.amazonaws.com/?user_code=ABCD-EFGH")
+
+    // If user_code is already present, it should not be duplicated
+    let alreadyPresent = URL(string: "https://device.sso.eu-central-1.amazonaws.com/?user_code=ABCD-EFGH")!
+    let notDuplicated = ProfileStore.urlWithUserCode(alreadyPresent, code: "ABCD-EFGH")
+    assert(notDuplicated.absoluteString == "https://device.sso.eu-central-1.amazonaws.com/?user_code=ABCD-EFGH")
+
+    // Non-device URLs should not be modified
+    let googleURL = URL(string: "https://accounts.google.com/o/oauth2/auth")!
+    let unmodified = ProfileStore.urlWithUserCode(googleURL, code: "ABCD-EFGH")
+    assert(unmodified.absoluteString == "https://accounts.google.com/o/oauth2/auth")
+}
+
+@MainActor
+func testDeviceAuthStreamingChunksUpdatesPresentation() async throws {
+    let runner = LifecycleGateRunner()
+    let (store, directory, defaults, suiteName) = try makeLifecycleStore(
+        profileNames: ["alpha"],
+        runner: runner
+    )
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+    let profile = store.profiles.first!
+
+    store.login(profile)
+    await runner.waitForCommandCount(1)
+
+    // Emit chunk 1: URL only
+    await runner.emitOutput("Using a browser, open the following URL:\nhttps://device.sso.eu-central-1.amazonaws.com/\n", forCommand: 0)
+
+    await waitForLifecycleCondition("initial in-app authentication presentation") {
+        if case .inAppAuth(let req) = store.presentation?.route {
+            return req.url.host?.contains("device.sso") == true
+        }
+        return false
+    }
+
+    guard case .inAppAuth(let initialReq) = store.presentation?.route else {
+        assertionFailure("inAppAuth route expected")
+        return
+    }
+    assert(initialReq.userCode == nil, "Initial chunk had no code yet")
+
+    // Emit chunk 2: Code arrives in subsequent chunk
+    await runner.emitOutput("and enter the code:\n\nABCD-EFGH\n", forCommand: 0)
+
+    await waitForLifecycleCondition("updated in-app authentication presentation with code") {
+        if case .inAppAuth(let req) = store.presentation?.route {
+            return req.userCode == "ABCD-EFGH"
+        }
+        return false
+    }
+
+    guard case .inAppAuth(let updatedReq) = store.presentation?.route else {
+        assertionFailure("updated inAppAuth route expected")
+        return
+    }
+    assert(updatedReq.userCode == "ABCD-EFGH")
+    assert(updatedReq.url.query?.contains("user_code=ABCD-EFGH") == true, "URL must be augmented with user_code")
+
+    // Cleanup: cancel presentation
+    let presentationID = store.presentation!.id
+    store.cancelPresentation(id: presentationID, from: .mainWindow)
+    assert(store.presentation == nil)
+
+    await runner.releaseCommand(0, result: CommandResult(exitCode: 15, output: "cancelled"))
+    await Task.yield()
+}
+
+@MainActor
 func runProfileLifecyclePresentationTests() async throws {
+    try testDeviceAuthCodeExtraction()
+    try testDeviceAuthURLAugmentation()
+    try await testDeviceAuthStreamingChunksUpdatesPresentation()
     try await testMissingCLIRetryPublicationIsGenerationGated()
     try testPresentationRoutesAreOriginFilteredAndReportIsTyped()
     try await testPresentationConsumptionUsesExactRouteID()

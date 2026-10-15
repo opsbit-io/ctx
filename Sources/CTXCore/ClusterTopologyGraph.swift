@@ -1,20 +1,38 @@
 import Foundation
 
+/// High-level domain category for grouping and quick-filtering graph nodes.
+public enum TopologyNodeCategory: String, Sendable, Codable, CaseIterable {
+    case workload = "Workloads"
+    case network = "Network"
+    case storage = "Storage"
+    case config = "Config"
+    case rbac = "RBAC"
+
+    public var title: String { rawValue }
+
+    public var defaultHexColor: String {
+        switch self {
+        case .workload: return "#326CE5"
+        case .network: return "#00B4D8"
+        case .storage: return "#E76F51"
+        case .config: return "#2A9D8F"
+        case .rbac: return "#9B5DE5"
+        }
+    }
+}
+
 /// The map's data model: a real directed graph of Kubernetes objects, not a
 /// bundle of pre-bucketed lists.
-///
-/// Every edge here comes from a field Kubernetes itself owns — an Ingress
-/// backend name, a Service `spec.selector`, a Pod `ownerReference`, a Pod
-/// volume's `claimName`, an HPA `scaleTargetRef`. Nothing is inferred from a
-/// resource's *name*. That is the whole difference between a diagram that
-/// happens to look like a pipeline and one that tells you what actually calls
-/// what: the previous model grouped services by their name prefix and stapled
-/// every PVC in the namespace onto every service in it, which is why the same
-/// pod showed up under three cards and unrelated services merged into one.
 public enum TopologyGraphNodeKind: String, Sendable, Codable, CaseIterable {
     case ingress
     case service
     case workload
+    case deployment
+    case statefulSet
+    case daemonSet
+    case cronJob
+    case job
+    case replicaSet
     case pod
     /// Several interchangeable healthy pods drawn as one node.
     case podGroup
@@ -23,17 +41,59 @@ public enum TopologyGraphNodeKind: String, Sendable, Codable, CaseIterable {
     /// Additional siblings hidden by a projection budget or parent cap.
     case overflow
     case pvc
+    case pv
+    case storageClass
+    case configMap
+    case secret
+    case networkPolicy
+    case serviceAccount
+    case role
+    case clusterRole
+    case roleBinding
     case hpa
+
+    /// High-level category for toolbar pills filtering.
+    public var category: TopologyNodeCategory {
+        switch self {
+        case .workload, .deployment, .statefulSet, .daemonSet, .cronJob, .job, .replicaSet,
+             .pod, .podGroup, .terminalGroup, .overflow, .hpa:
+            return .workload
+        case .ingress, .service, .networkPolicy:
+            return .network
+        case .pvc, .pv, .storageClass:
+            return .storage
+        case .configMap, .secret:
+            return .config
+        case .serviceAccount, .role, .clusterRole, .roleBinding:
+            return .rbac
+        }
+    }
+
+    public var defaultHexColor: String {
+        switch self {
+        case .workload, .deployment, .statefulSet, .daemonSet, .cronJob, .job, .replicaSet,
+             .pod, .podGroup, .terminalGroup, .overflow, .hpa:
+            return "#326CE5"
+        case .ingress, .service, .networkPolicy:
+            return "#00B4D8"
+        case .pvc, .pv, .storageClass:
+            return "#E76F51"
+        case .configMap, .secret:
+            return "#2A9D8F"
+        case .serviceAccount, .role, .clusterRole, .roleBinding:
+            return "#9B5DE5"
+        }
+    }
 
     /// The column this kind sits in. Lineage flows left to right:
     /// entrypoint → routing → controller → runtime → storage.
     public var layerFloor: Int {
         switch self {
         case .ingress, .hpa: 0
-        case .service: 1
-        case .workload: 2
+        case .service, .networkPolicy: 1
+        case .workload, .deployment, .statefulSet, .daemonSet, .cronJob, .job, .replicaSet: 2
         case .pod, .podGroup, .terminalGroup, .overflow: 3
-        case .pvc: 4
+        case .pvc, .pv, .storageClass, .configMap, .secret, .serviceAccount, .role, .clusterRole, .roleBinding: 4
         }
     }
 
@@ -42,11 +102,26 @@ public enum TopologyGraphNodeKind: String, Sendable, Codable, CaseIterable {
         case .ingress: "Ingress"
         case .service: "Service"
         case .workload: "Workload"
+        case .deployment: "Deployment"
+        case .statefulSet: "StatefulSet"
+        case .daemonSet: "DaemonSet"
+        case .cronJob: "CronJob"
+        case .job: "Job"
+        case .replicaSet: "ReplicaSet"
         case .pod: "Pod"
         case .podGroup: "Pods"
         case .terminalGroup: "Completed Pods"
         case .overflow: "More"
         case .pvc: "PersistentVolumeClaim"
+        case .pv: "PersistentVolume"
+        case .storageClass: "StorageClass"
+        case .configMap: "ConfigMap"
+        case .secret: "Secret"
+        case .networkPolicy: "NetworkPolicy"
+        case .serviceAccount: "ServiceAccount"
+        case .role: "Role"
+        case .clusterRole: "ClusterRole"
+        case .roleBinding: "RoleBinding"
         case .hpa: "HorizontalPodAutoscaler"
         }
     }
@@ -55,28 +130,50 @@ public enum TopologyGraphNodeKind: String, Sendable, Codable, CaseIterable {
         switch self {
         case .ingress: "arrow.triangle.branch"
         case .service: "point.3.connected.trianglepath.dotted"
-        case .workload: "shippingbox"
+        case .workload, .deployment: "shippingbox"
+        case .statefulSet: "server.rack"
+        case .daemonSet: "gearshape.2"
+        case .cronJob, .job: "clock.arrow.2.circlepath"
+        case .replicaSet: "square.grid.2x2"
         case .pod, .podGroup: "circle.grid.3x3"
         case .terminalGroup: "checkmark.circle"
         case .overflow: "ellipsis.circle"
-        case .pvc: "internaldrive"
+        case .pvc, .pv: "internaldrive"
+        case .storageClass: "externaldrive"
+        case .configMap: "doc.text"
+        case .secret: "key"
+        case .networkPolicy: "shield"
+        case .serviceAccount, .role, .clusterRole, .roleBinding: "person.badge.key"
         case .hpa: "arrow.up.and.down.square"
         }
     }
 
-    /// Three-letter chip shown on the node, the way dbt tags a lineage node SRC
-    /// / MDL / SEM. Kind is what the chip encodes; health lives elsewhere. Mixing
-    /// the two onto one badge is how the old cards ended up unreadable.
+    /// Three-letter chip shown on the node.
     public var code: String {
         switch self {
         case .ingress: "ING"
         case .service: "SVC"
         case .workload: "WKL"
+        case .deployment: "DEP"
+        case .statefulSet: "STS"
+        case .daemonSet: "DS"
+        case .cronJob: "CRON"
+        case .job: "JOB"
+        case .replicaSet: "RS"
         case .pod: "POD"
         case .podGroup: "PODS"
         case .terminalGroup: "DONE"
         case .overflow: "MORE"
         case .pvc: "PVC"
+        case .pv: "PV"
+        case .storageClass: "SC"
+        case .configMap: "CM"
+        case .secret: "SEC"
+        case .networkPolicy: "NET"
+        case .serviceAccount: "SA"
+        case .role: "ROL"
+        case .clusterRole: "CROL"
+        case .roleBinding: "RB"
         case .hpa: "HPA"
         }
     }
@@ -113,6 +210,23 @@ public struct TopologyGraphNode: Identifiable, Equatable, Sendable {
         self.issueCount = issueCount
     }
 
+    public var effectiveKind: TopologyGraphNodeKind {
+        if kind == .workload {
+            let k = (row.cells["Kind"] ?? "").lowercased()
+            if k.contains("deploy") { return .deployment }
+            if k.contains("stateful") { return .statefulSet }
+            if k.contains("daemon") { return .daemonSet }
+            if k.contains("cron") { return .cronJob }
+            if k.contains("job") { return .job }
+            if k.contains("replica") { return .replicaSet }
+        }
+        return kind
+    }
+
+    public var category: TopologyNodeCategory {
+        effectiveKind.category
+    }
+
     public static func == (lhs: TopologyGraphNode, rhs: TopologyGraphNode) -> Bool {
         lhs.id == rhs.id && lhs.health == rhs.health && lhs.issueCount == rhs.issueCount
     }
@@ -122,27 +236,24 @@ public struct TopologyGraphNode: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Why two objects are connected. Shown as the edge's label in tooltips and in
-/// the inspector, so a connection can always be explained rather than just seen.
+/// Why two objects are connected.
 public enum TopologyGraphEdgeKind: String, Sendable, CaseIterable {
-    /// Ingress rule backend → Service (`spec.rules[].http.paths[].backend.service.name`).
     case routes
-    /// Service `spec.selector` ⊆ workload `spec.selector.matchLabels`. This is
-    /// the edge that keeps the chain intact when a workload is scaled to zero:
-    /// there are no Pods to select, but the Service still fronts that
-    /// Deployment, and without this edge both cards float unconnected.
     case targets
-    /// Service `spec.selector` → Pod labels. Only drawn for pods the Service
-    /// reaches *without* going through a targeted workload, so a healthy
-    /// Service→Deployment→Pod chain isn't also short-circuited by a redundant
-    /// Service→Pod arrow across it.
     case selects
-    /// Pod `ownerReferences` → Deployment / StatefulSet / DaemonSet.
     case owns
-    /// Pod `spec.volumes[].persistentVolumeClaim.claimName` → PVC.
     case mounts
-    /// HPA `spec.scaleTargetRef` → workload.
     case scales
+
+    public var defaultHexColor: String {
+        switch self {
+        case .routes: return "#e3b341"
+        case .targets, .selects: return "#d29922"
+        case .owns: return "#6e7681"
+        case .mounts: return "#db6d28"
+        case .scales: return "#326CE5"
+        }
+    }
 
     public var label: String {
         switch self {
@@ -180,10 +291,6 @@ public struct ClusterTopologyGraph: Sendable {
     public var isEmpty: Bool { nodes.isEmpty }
 
     public init(nodes: [TopologyGraphNode], edges: [TopologyGraphEdge]) {
-        // Dedupe defensively: a node reached twice (a pod backing two Services)
-        // must stay ONE node with two incoming edges — that shared fan-in is the
-        // relationship the map exists to show, and the old builder destroyed it
-        // by dropping the pod the second time it was seen.
         var seenNodes = Set<String>()
         var uniqueNodes: [TopologyGraphNode] = []
         for node in nodes where !seenNodes.contains(node.id) {
@@ -210,19 +317,14 @@ public struct ClusterTopologyGraph: Sendable {
     public func edgesOut(_ id: String) -> [TopologyGraphEdge] { outgoing[id] ?? [] }
     public func edgesIn(_ id: String) -> [TopologyGraphEdge] { incoming[id] ?? [] }
 
-    /// Everything reachable upstream and downstream of `id` — dbt's `+model+`.
-    /// Used to highlight one object's full blast radius without hiding the rest
-    /// of the graph, so you can see both the lineage and where it sits.
     public func lineage(of id: String) -> Set<String> {
         walk(from: id) { self.edgesOut($0).map(\.target) + self.edgesIn($0).map(\.source) }
     }
 
-    /// Everything this node depends on, walking upstream only — dbt's `+model`.
     public func ancestors(of id: String) -> Set<String> {
         walk(from: id) { self.edgesIn($0).map(\.source) }
     }
 
-    /// Everything that depends on this node, walking downstream only — `model+`.
     public func descendants(of id: String) -> Set<String> {
         walk(from: id) { self.edgesOut($0).map(\.target) }
     }

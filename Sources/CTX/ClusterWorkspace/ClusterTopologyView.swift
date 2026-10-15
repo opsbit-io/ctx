@@ -10,25 +10,20 @@ struct ClusterTopologyView: View {
     @State private var selectedNodeID: String?
     @State private var needsAttentionOnly = false
     @State private var showsInactive = false
+    @State private var selectedCategory: TopologyNodeCategory? = nil
 
     private var projection: TopologyProjection? { viewModel.topologyProjection }
 
-    /// Taken from the view model, not from the text field. The projection is
-    /// built for the committed selector, so filtering the drawn graph by
-    /// anything else describes a map that does not exist — including for the
-    /// frame after a namespace switch clears the selector while the field still
-    /// holds the old term.
     private var filter: TopologyMapFilter {
         TopologyMapFilter(
             searchText: viewModel.topologySelectorText,
             includesInactive: showsInactive,
-            needsAttentionOnly: needsAttentionOnly
+            needsAttentionOnly: needsAttentionOnly,
+            category: selectedCategory
         )
     }
 
     var body: some View {
-        // Built once per pass and handed down, so the toolbar's counts and the
-        // canvas's empty state can never describe two different maps.
         let snapshot = TopologyMapSnapshot(
             projected: viewModel.topologyGraph,
             projection: projection,
@@ -40,9 +35,11 @@ struct ClusterTopologyView: View {
                 searchText: $searchText,
                 needsAttentionOnly: $needsAttentionOnly,
                 showsInactive: $showsInactive,
+                selectedCategory: $selectedCategory,
                 scale: scale,
                 counts: TopologyCountSummary(snapshot),
-                command: $command
+                command: $command,
+                categoryCounts: categoryCounts(in: viewModel.topologyGraph)
             )
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -65,18 +62,10 @@ struct ClusterTopologyView: View {
             searchText = viewModel.topologySelectorText
             viewModel.loadTopologyResources()
         }
-        // Typing is not a reason to drop the selection: the inspector describes
-        // an object, and that object is still the same one three keystrokes into
-        // a search that has not been committed yet. If the committed filter does
-        // remove it, the node-list check below clears the selection then.
         .onChange(of: searchText) { _, value in
             scheduleSelectorUpdate(value)
         }
         .onChange(of: viewModel.topologyScopeID) { _, _ in
-            // The scope, not the selector: switching to a namespace while the
-            // committed selector is empty leaves the text unchanged, and the
-            // term the user half-typed for the previous namespace would
-            // otherwise stay in the field and land 180ms later.
             searchTask?.cancel()
             searchTask = nil
             searchText = ""
@@ -96,9 +85,6 @@ struct ClusterTopologyView: View {
         .onDisappear {
             searchTask?.cancel()
         }
-        // Escape reaches here from anywhere in the pane that does not handle it
-        // first, so it still dismisses the inspector when focus is on one of the
-        // inspector's own buttons rather than on the canvas.
         .onExitCommand {
             selectedNodeID = nil
         }
@@ -107,10 +93,6 @@ struct ClusterTopologyView: View {
         }
     }
 
-    /// Mounted by the pane rather than by the toolbar, because the toolbar shows
-    /// one of three layouts: a shortcut attached to a button in the wide layout
-    /// vanishes the moment the window narrows, and one attached to a branch
-    /// `ViewThatFits` merely measures can fire twice.
     private var zoomShortcuts: some View {
         HStack {
             Button("") { command = .zoomIn }
@@ -139,9 +121,6 @@ struct ClusterTopologyView: View {
                     selectedNodeID: $selectedNodeID
                 )
             case .awaitingProjection:
-                // The filters do match something; the projection just has not
-                // caught up. Saying "no match" here would be a lie the next
-                // frame corrects.
                 ResourceSkeletonView(
                     title: "Bringing \(snapshot.eligibleCount) matching object\(snapshot.eligibleCount == 1 ? "" : "s") into view"
                 )
@@ -165,9 +144,6 @@ struct ClusterTopologyView: View {
                     systemImage: "moon.zzz"
                 )
             case .noObjects:
-                // "Nothing to map" is a claim about the namespace, so it waits
-                // until every source list is in and a build has actually
-                // published its verdict.
                 if viewModel.isTopologyPending {
                     ResourceSkeletonView(title: "Building the service map")
                         .padding(22)
@@ -225,9 +201,6 @@ struct ClusterTopologyView: View {
     private func scheduleSelectorUpdate(_ value: String) {
         searchTask?.cancel()
         guard value != viewModel.topologySelectorText else { return }
-        // The scope is captured, not read at commit time: a term typed for one
-        // namespace must never be applied to the next, however the reset and
-        // this sleep interleave.
         let scope = viewModel.topologyScopeID
         searchTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 180_000_000)
@@ -236,6 +209,15 @@ struct ClusterTopologyView: View {
                   value != viewModel.topologySelectorText else { return }
             viewModel.setTopologySelector(value)
         }
+    }
+
+    
+    private func categoryCounts(in graph: ClusterTopologyGraph) -> [TopologyNodeCategory: Int] {
+        var counts: [TopologyNodeCategory: Int] = [:]
+        for node in graph.nodes {
+            counts[node.category, default: 0] += 1
+        }
+        return counts
     }
 
     private func showPods(_ group: TopologyProjectedGroup) {
@@ -258,10 +240,15 @@ private extension TopologyGraphNodeKind {
         switch self {
         case .ingress: .ingress
         case .service: .services
-        case .workload: .workloads
+        case .workload, .deployment, .statefulSet, .daemonSet, .replicaSet, .job: .workloads
+        case .cronJob: .cronjobs
         case .pod: .pods
-        case .pvc: .storage
+        case .pvc, .pv, .storageClass: .storage
+        case .configMap: .configMaps
+        case .secret: .secrets
         case .hpa: .hpa
+        case .networkPolicy: .ingress
+        case .serviceAccount, .role, .clusterRole, .roleBinding: nil
         case .podGroup, .terminalGroup, .overflow: nil
         }
     }

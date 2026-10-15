@@ -15,7 +15,11 @@ struct InAppAuthWindowScene: View {
         Group {
             if let presentation = store.presentation,
                case .inAppAuth(let request) = presentation.route {
-                InAppAuthWebModalView(url: request.url, userEmail: request.email) { result in
+                InAppAuthWebModalView(
+                    url: request.url,
+                    userCode: request.userCode,
+                    userEmail: request.email
+                ) { result in
                     switch result {
                     case .success:
                         store.consumePresentation(id: presentation.id, from: presentation.origin)
@@ -40,6 +44,7 @@ struct InAppAuthWindowScene: View {
 
 public struct InAppAuthWebModalView: View {
     let url: URL
+    let userCode: String?
     let userEmail: String?
     let callbackURLScheme: String?
     let onComplete: (Result<URL, Error>) -> Void
@@ -50,22 +55,42 @@ public struct InAppAuthWebModalView: View {
     @State private var isLoading = false
     @State private var currentURL: URL?
     @State private var copiedURL = false
+    @State private var copiedCode = false
+    @State private var autoCopiedNotice = false
 
     public init(
         url: URL,
+        userCode: String? = nil,
         userEmail: String? = nil,
         callbackURLScheme: String? = nil,
         onComplete: @escaping (Result<URL, Error>) -> Void
     ) {
+        self.userCode = userCode
         self.userEmail = userEmail
         self.callbackURLScheme = callbackURLScheme
         self.onComplete = onComplete
 
-        // Pre-process URL with login_hint if email is present and not already in URL
+        // Pre-process URL with user_code if not already present
         var finalURL = url
-        if let email = userEmail, !email.isEmpty, email.contains("@") {
-            if let host = url.host?.lowercased(), host.contains("google") || host.contains("microsoft") || host.contains("okta") {
+        if let code = userCode, !code.isEmpty {
+            if let host = url.host?.lowercased(), host.contains("device.sso") || host.contains("devicelogin") || host.contains("github.com") {
                 if var components = URLComponents(url: url, resolvingAgainstBaseURL: true) {
+                    var items = components.queryItems ?? []
+                    if !items.contains(where: { $0.name.lowercased() == "user_code" }) {
+                        items.append(URLQueryItem(name: "user_code", value: code))
+                        components.queryItems = items
+                        if let u = components.url {
+                            finalURL = u
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pre-process URL with login_hint if email is present and not already in URL
+        if let email = userEmail, !email.isEmpty, email.contains("@") {
+            if let host = finalURL.host?.lowercased(), host.contains("google") || host.contains("microsoft") || host.contains("okta") {
+                if var components = URLComponents(url: finalURL, resolvingAgainstBaseURL: true) {
                     var items = components.queryItems ?? []
                     if !items.contains(where: { $0.name == "login_hint" }) {
                         items.append(URLQueryItem(name: "login_hint", value: email))
@@ -243,9 +268,100 @@ public struct InAppAuthWebModalView: View {
             }
             .frame(height: 2)
 
+            // Device Authorization Code Banner (AWS SSO / Azure / Device Flow)
+            if let code = userCode, !code.isEmpty {
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.orange.opacity(0.16))
+                            .frame(width: 32, height: 32)
+                        Image(systemName: "key.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color.orange)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("Device Verification Code")
+                                .font(.system(.caption, weight: .bold))
+                                .foregroundStyle(.primary)
+
+                            if autoCopiedNotice {
+                                Text("• Copied to clipboard")
+                                    .font(.system(.caption2, weight: .semibold))
+                                    .foregroundStyle(Color.green)
+                                    .transition(.opacity)
+                            }
+                        }
+
+                        Text("Enter this code in the prompt below if requested, or paste with ⌘V.")
+                            .font(.system(.caption2))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 16)
+
+                    HStack(spacing: 8) {
+                        Text(code)
+                            .font(.system(.subheadline, design: .monospaced, weight: .heavy))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color.primary.opacity(0.08))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                                    )
+                            )
+                            .textSelection(.enabled)
+
+                        Button {
+                            #if canImport(AppKit)
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(code, forType: .string)
+                            #endif
+                            copiedCode = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                                copiedCode = false
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: copiedCode ? "checkmark" : "doc.on.doc.fill")
+                                    .font(.system(.caption2, weight: .bold))
+                                Text(copiedCode ? "Copied" : "Copy Code")
+                                    .font(.system(.caption, weight: .semibold))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(copiedCode ? Color.green.opacity(0.2) : Color.accentColor.opacity(0.15))
+                            )
+                            .foregroundStyle(copiedCode ? Color.green : Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Copy code to clipboard")
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(
+                    Color(nsColor: .windowBackgroundColor)
+                        .overlay(
+                            Rectangle()
+                                .frame(height: 1)
+                                .foregroundStyle(Color.primary.opacity(0.08)),
+                            alignment: .bottom
+                        )
+                )
+            }
+
             // Web View Container
             WebViewRepresentable(
                 url: url,
+                userCode: userCode,
                 userEmail: userEmail,
                 callbackURLScheme: callbackURLScheme,
                 onComplete: { result in
@@ -261,11 +377,26 @@ public struct InAppAuthWebModalView: View {
         }
         .frame(minWidth: 840, minHeight: 760)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear {
+            if let code = userCode, !code.isEmpty {
+                #if canImport(AppKit)
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(code, forType: .string)
+                #endif
+                autoCopiedNotice = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    withAnimation {
+                        autoCopiedNotice = false
+                    }
+                }
+            }
+        }
     }
 }
 
 private struct WebViewRepresentable: NSViewRepresentable {
     let url: URL
+    let userCode: String?
     let userEmail: String?
     let callbackURLScheme: String?
     let onComplete: (Result<URL, Error>) -> Void
@@ -309,6 +440,50 @@ private struct WebViewRepresentable: NSViewRepresentable {
             configuration.userContentController.addUserScript(userScript)
         }
 
+        // Inject JS helper to auto-fill device authorization user code if provided
+        if let code = userCode, !code.isEmpty {
+            let codeJS = """
+            (function() {
+                var authCode = "\(code)";
+                if (!authCode) return;
+                function tryFillCode() {
+                    var selectors = [
+                        'input[name="user_code"]',
+                        'input[name="code"]',
+                        'input[id="user_code"]',
+                        'input[id="code"]',
+                        'input[id="confirmation-code-input"]',
+                        'input[autocomplete="one-time-code"]',
+                        'input[placeholder*="code" i]',
+                        'input[aria-label*="code" i]'
+                    ];
+                    for (var i = 0; i < selectors.length; i++) {
+                        var inputs = document.querySelectorAll(selectors[i]);
+                        for (var j = 0; j < inputs.length; j++) {
+                            var input = inputs[j];
+                            if (!input.value || input.value === '') {
+                                input.value = authCode;
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                                input.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                        }
+                    }
+                }
+                if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                    tryFillCode();
+                } else {
+                    document.addEventListener('DOMContentLoaded', tryFillCode);
+                }
+                setTimeout(tryFillCode, 300);
+                setTimeout(tryFillCode, 800);
+                setTimeout(tryFillCode, 1500);
+                setTimeout(tryFillCode, 3000);
+            })();
+            """
+            let codeScript = WKUserScript(source: codeJS, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+            configuration.userContentController.addUserScript(codeScript)
+        }
+
         // Inject JS completion observer for StrongDM, AWS SSO, and SSO success screens
         let completionJS = """
         (function() {
@@ -328,6 +503,9 @@ private struct WebViewRepresentable: NSViewRepresentable {
                     lowerText.includes('device authorized') ||
                     lowerText.includes('successfully authorized') ||
                     lowerText.includes('request authorized') ||
+                    lowerText.includes('sign in to aws cli was successful') ||
+                    lowerText.includes('you have successfully signed in') ||
+                    lowerText.includes('you can now close this tab') ||
                     lowerTitle.includes('authentication complete')) {
                     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ctxAuthComplete) {
                         window.webkit.messageHandlers.ctxAuthComplete.postMessage("complete");
@@ -450,6 +628,9 @@ private struct WebViewRepresentable: NSViewRepresentable {
                        lowerText.includes('device authorized') ||
                        lowerText.includes('successfully authorized') ||
                        lowerText.includes('request authorized') ||
+                       lowerText.includes('sign in to aws cli was successful') ||
+                       lowerText.includes('you have successfully signed in') ||
+                       lowerText.includes('you can now close this tab') ||
                        lowerTitle.includes('authentication complete');
             })();
             """

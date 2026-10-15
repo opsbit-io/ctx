@@ -379,21 +379,40 @@ struct CTXEmptyStateView: View {
 struct CTXLoadingStateView: View {
     let title: String
     var message: String = "Preparing inspection preview"
+    var centered: Bool = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            ProgressView()
-                .controlSize(.small)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.headline)
-                    .lineLimit(1)
-                Text(message)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        if centered {
+            VStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.regular)
+                VStack(spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(message)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
-            Spacer()
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        } else {
+            HStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.small)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(message)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+            }
         }
     }
 }

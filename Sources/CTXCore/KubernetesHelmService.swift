@@ -57,11 +57,87 @@ public struct HelmReadResult: Sendable {
     }
 }
 
+public enum HelmError: LocalizedError, Sendable {
+    case helmNotFound(String)
+    case commandFailed(String)
+    case parsingFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .helmNotFound(let msg), .commandFailed(let msg), .parsingFailed(let msg):
+            return msg
+        }
+    }
+}
+
+public struct HelmRevisionItem: Identifiable, Equatable, Sendable {
+    public var id: Int { revision }
+    public var revision: Int
+    public var updated: String
+    public var status: String
+    public var chart: String
+    public var appVersion: String
+    public var description: String
+
+    public init(
+        revision: Int,
+        updated: String,
+        status: String,
+        chart: String,
+        appVersion: String,
+        description: String
+    ) {
+        self.revision = revision
+        self.updated = updated
+        self.status = status
+        self.chart = chart
+        self.appVersion = appVersion
+        self.description = description
+    }
+}
+
 public protocol KubernetesHelmReading: Sendable {
     func releases(
         context: KubernetesContextProfile,
         namespace: KubernetesNamespaceSelection
     ) async -> HelmReadResult
+
+    func releaseValues(
+        context: KubernetesContextProfile,
+        namespace: String,
+        name: String,
+        allValues: Bool
+    ) async -> Result<String, Error>
+
+    func releaseManifest(
+        context: KubernetesContextProfile,
+        namespace: String,
+        name: String
+    ) async -> Result<String, Error>
+
+    func releaseHistory(
+        context: KubernetesContextProfile,
+        namespace: String,
+        name: String
+    ) async -> Result<[HelmRevisionItem], Error>
+
+    func rollbackRelease(
+        context: KubernetesContextProfile,
+        namespace: String,
+        name: String,
+        revision: Int
+    ) async -> Result<String, Error>
+}
+
+public extension KubernetesHelmReading {
+    func rollbackRelease(
+        context: KubernetesContextProfile,
+        namespace: String,
+        name: String,
+        revision: Int
+    ) async -> Result<String, Error> {
+        .failure(HelmError.commandFailed("Rollback not supported"))
+    }
 }
 
 /// Reads real Helm releases.
@@ -119,10 +195,9 @@ public final class KubernetesHelmReader: KubernetesHelmReading {
         namespace: KubernetesNamespaceSelection
     ) async -> HelmReadResult {
         let started = Date()
-        // `helm list` without `--all` applies a state filter that hides exactly the
-        // releases worth looking at: anything stuck in pending-install,
-        // pending-upgrade or pending-rollback. With `--all` every release is
-        // returned and the Status column reports its real state.
+        // `helm list` with `--all` works on Helm 3. Helm 4 lists all releases by
+        // default and rejected `--all` with an unknown flag error. If `--all` is rejected,
+        // we cleanly re-issue without it.
         var arguments = ["list", "--all", "--output", "json", "--kube-context", context.contextName]
         switch namespace {
         case .allNamespaces: arguments.append("--all-namespaces")
@@ -141,7 +216,18 @@ public final class KubernetesHelmReader: KubernetesHelmReading {
         )
 
         do {
-            let result = try await kubectl.run(command, timeout: timeout)
+            var result = try await kubectl.run(command, timeout: timeout)
+            // Helm 4 compatibility: if --all was rejected, re-run without it.
+            if result.exitCode != 0 && (result.stderr.contains("unknown flag: --all") || result.stderr.contains("unknown shorthand flag")) {
+                let compatibleArgs = arguments.filter { $0 != "--all" }
+                let retryCommand = KubectlCommand(
+                    executablePath: helmPath,
+                    arguments: compatibleArgs,
+                    environmentOverrides: kubeconfig.isEmpty ? [:] : ["KUBECONFIG": kubeconfig]
+                )
+                result = try await kubectl.run(retryCommand, timeout: timeout)
+            }
+
             guard result.exitCode == 0 else {
                 return HelmReadResult(
                     items: [],
@@ -274,8 +360,162 @@ public final class KubernetesHelmReader: KubernetesHelmReading {
         return latest.values.sorted { ($0.namespace, $0.name) < ($1.namespace, $1.name) }
     }
 
-    // MARK: - Shared
+    // MARK: - Values, Manifest & History
 
+    public func releaseValues(
+        context: KubernetesContextProfile,
+        namespace: String,
+        name: String,
+        allValues: Bool
+    ) async -> Result<String, Error> {
+        guard let helmPath = resolveBinary("helm") else {
+            return .failure(HelmError.helmNotFound("helm CLI is required on PATH to view release values."))
+        }
+        var arguments = ["get", "values", name, "--namespace", namespace, "--kube-context", context.contextName]
+        if allValues {
+            arguments.append("--all")
+        }
+        let kubeconfig = context.kubeconfigPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !kubeconfig.isEmpty {
+            arguments.append(contentsOf: ["--kubeconfig", kubeconfig])
+        }
 
+        let command = KubectlCommand(
+            executablePath: helmPath,
+            arguments: arguments,
+            environmentOverrides: kubeconfig.isEmpty ? [:] : ["KUBECONFIG": kubeconfig]
+        )
 
+        do {
+            let result = try await kubectl.run(command, timeout: timeout)
+            guard result.exitCode == 0 else {
+                let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                return .failure(HelmError.commandFailed(stderr.isEmpty ? "Failed to get Helm values" : stderr))
+            }
+            let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .success(output.isEmpty ? "# No custom values set for this release" : output)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    public func releaseManifest(
+        context: KubernetesContextProfile,
+        namespace: String,
+        name: String
+    ) async -> Result<String, Error> {
+        guard let helmPath = resolveBinary("helm") else {
+            return .failure(HelmError.helmNotFound("helm CLI is required on PATH to view release manifests."))
+        }
+        var arguments = ["get", "manifest", name, "--namespace", namespace, "--kube-context", context.contextName]
+        let kubeconfig = context.kubeconfigPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !kubeconfig.isEmpty {
+            arguments.append(contentsOf: ["--kubeconfig", kubeconfig])
+        }
+
+        let command = KubectlCommand(
+            executablePath: helmPath,
+            arguments: arguments,
+            environmentOverrides: kubeconfig.isEmpty ? [:] : ["KUBECONFIG": kubeconfig]
+        )
+
+        do {
+            let result = try await kubectl.run(command, timeout: timeout)
+            guard result.exitCode == 0 else {
+                let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                return .failure(HelmError.commandFailed(stderr.isEmpty ? "Failed to get Helm manifest" : stderr))
+            }
+            return .success(result.stdout)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    public func releaseHistory(
+        context: KubernetesContextProfile,
+        namespace: String,
+        name: String
+    ) async -> Result<[HelmRevisionItem], Error> {
+        guard let helmPath = resolveBinary("helm") else {
+            return .failure(HelmError.helmNotFound("helm CLI is required on PATH to view release history."))
+        }
+        var arguments = ["history", name, "--namespace", namespace, "--output", "json", "--kube-context", context.contextName]
+        let kubeconfig = context.kubeconfigPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !kubeconfig.isEmpty {
+            arguments.append(contentsOf: ["--kubeconfig", kubeconfig])
+        }
+
+        let command = KubectlCommand(
+            executablePath: helmPath,
+            arguments: arguments,
+            environmentOverrides: kubeconfig.isEmpty ? [:] : ["KUBECONFIG": kubeconfig]
+        )
+
+        do {
+            let result = try await kubectl.run(command, timeout: timeout)
+            guard result.exitCode == 0 else {
+                let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                return .failure(HelmError.commandFailed(stderr.isEmpty ? "Failed to get Helm history" : stderr))
+            }
+            let revisions = Self.parseHelmHistoryJSON(result.stdout)
+            return .success(revisions)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    public func rollbackRelease(
+        context: KubernetesContextProfile,
+        namespace: String,
+        name: String,
+        revision: Int
+    ) async -> Result<String, Error> {
+        guard let helmPath = resolveBinary("helm") else {
+            return .failure(HelmError.helmNotFound("helm CLI is required on PATH to roll back releases."))
+        }
+        var arguments = ["rollback", name, String(revision), "--namespace", namespace, "--kube-context", context.contextName]
+        let kubeconfig = context.kubeconfigPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !kubeconfig.isEmpty {
+            arguments.append(contentsOf: ["--kubeconfig", kubeconfig])
+        }
+
+        let command = KubectlCommand(
+            executablePath: helmPath,
+            arguments: arguments,
+            environmentOverrides: kubeconfig.isEmpty ? [:] : ["KUBECONFIG": kubeconfig]
+        )
+
+        do {
+            let result = try await kubectl.run(command, timeout: timeout)
+            guard result.exitCode == 0 else {
+                let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                return .failure(HelmError.commandFailed(stderr.isEmpty ? "Failed to roll back Helm release" : stderr))
+            }
+            return .success(result.stdout)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    public static func parseHelmHistoryJSON(_ stdout: String) -> [HelmRevisionItem] {
+        guard
+            let data = stdout.data(using: .utf8),
+            let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [] }
+
+        return entries.compactMap { entry in
+            let revisionRaw = entry["revision"]
+            let revision = (revisionRaw as? Int) ?? Int((revisionRaw as? String) ?? "") ?? 0
+            guard revision > 0 else { return nil }
+            return HelmRevisionItem(
+                revision: revision,
+                updated: KubernetesGitOpsService.relativeAge(from: normalizedHelmTimestamp(entry["updated"] as? String)),
+                status: (entry["status"] as? String) ?? KubernetesGitOpsService.unknownValue,
+                chart: (entry["chart"] as? String) ?? KubernetesGitOpsService.unknownValue,
+                appVersion: (entry["app_version"] as? String) ?? KubernetesGitOpsService.unknownValue,
+                description: (entry["description"] as? String) ?? ""
+            )
+        }
+        .sorted { $0.revision > $1.revision }
+    }
 }

@@ -19,7 +19,7 @@ struct TopologyInspectorDetailView: View {
                 ("External", cells["External"]), ("Ports", cells["Ports"]),
                 ("Selector", cells["Selector"]), ("Age", cells["Age"])
             ]
-        case .workload:
+        case .workload, .deployment, .statefulSet, .daemonSet, .replicaSet, .job, .cronJob:
             candidates = [
                 ("Kind", cells["Kind"]), ("Ready", cells["Ready"]),
                 ("Available", cells["Available"]), ("Image", cells["Image"]),
@@ -34,11 +34,23 @@ struct TopologyInspectorDetailView: View {
                 ("Owner", cells["Owner"]), ("Image", cells["Image"]),
                 ("Age", cells["Age"])
             ]
-        case .pvc:
+        case .pvc, .pv, .storageClass:
             candidates = [
                 ("Status", cells["Status"]), ("Capacity", cells["Capacity"]),
                 ("Storage class", cells["StorageClass"]), ("Access modes", cells["Access Modes"]),
                 ("Volume", cells["Volume"]), ("Age", cells["Age"])
+            ]
+        case .configMap, .secret:
+            candidates = [
+                ("Data", cells["Data"] ?? cells["Keys"]), ("Age", cells["Age"])
+            ]
+        case .networkPolicy:
+            candidates = [
+                ("Pod selector", cells["PodSelector"]), ("Types", cells["PolicyTypes"]), ("Age", cells["Age"])
+            ]
+        case .serviceAccount, .role, .clusterRole, .roleBinding:
+            candidates = [
+                ("Subjects", cells["Subjects"]), ("Role", cells["Role"]), ("Age", cells["Age"])
             ]
         case .hpa:
             candidates = [
@@ -59,23 +71,23 @@ struct TopologyInspectorDetailView: View {
         VStack(alignment: .leading, spacing: 7) {
             TopologyInspectorSectionTitle(text: "DETAILS")
             if rows.isEmpty {
-                Text("No additional fields reported.")
+                Text("No additional details for this object.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(rows, id: \.0) { title, value in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    HStack(alignment: .top, spacing: 8) {
                         Text(title)
-                            .font(.system(.caption2, weight: .semibold))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
+                            .frame(width: 86, alignment: .leading)
                         Text(value)
                             .font(.system(.caption2, design: .monospaced))
                             .lineLimit(2)
-                            .truncationMode(.head)
-                            .multilineTextAlignment(.trailing)
+                            .truncationMode(.middle)
                             .textSelection(.enabled)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -87,8 +99,8 @@ struct TopologyInspectorSectionTitle: View {
 
     var body: some View {
         Text(text)
-            .font(.system(.caption2, weight: .bold))
+            .font(.system(size: 10, weight: .bold))
             .foregroundStyle(.secondary)
-            .tracking(0.5)
+            .tracking(0.6)
     }
 }

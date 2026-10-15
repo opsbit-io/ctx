@@ -248,6 +248,11 @@ extension ClusterWorkspaceViewModel {
             if result.status == .reachable || helmList == nil {
                 helmList = Self.list(from: result)
                 helmLoadedAt = Date()
+                if let first = result.items.first, self.selectedHelmRelease == nil {
+                    self.selectHelmRelease(first)
+                } else if let current = self.selectedHelmRelease, !result.items.contains(where: { $0.id == current.id }) {
+                    self.selectHelmRelease(result.items.first)
+                }
             }
             helmTask = nil
             CTXPerfLog.log(
@@ -294,12 +299,134 @@ extension ClusterWorkspaceViewModel {
     /// clear why Chart and App Version read as unknown rather than looking broken.
     var helmSourceNotice: String? {
         guard let result = helmResult, result.source == .releaseSecretLabels, !result.items.isEmpty else { return nil }
-        return "helm was not found on PATH. Showing release metadata from Helm's storage Secrets — chart and app version are inside the Secret payload, which CTX does not read."
+        return "Showing release metadata from cluster storage Secrets — chart and app version are stored in the Secret payload."
     }
 
     var helmEmptyMessage: String {
         guard helmResult != nil else { return "Loading Helm releases." }
         return "No Helm releases in this namespace scope."
+    }
+
+    func selectHelmRelease(_ release: HelmReleaseItem?) {
+        guard selectedHelmRelease != release else { return }
+        selectedHelmRelease = release
+        helmValuesYAML = nil
+        helmManifestYAML = nil
+        helmHistory = []
+        helmDetailError = nil
+        if release != nil {
+            isLoadingHelmDetail = true
+            loadSelectedHelmDetail()
+        } else {
+            isLoadingHelmDetail = false
+            helmDetailTask?.cancel()
+            helmDetailTask = nil
+        }
+    }
+
+    func setHelmTab(_ tab: HelmDetailTab) {
+        guard helmDetailTab != tab else { return }
+        helmDetailTab = tab
+        loadSelectedHelmDetail()
+    }
+
+    func toggleHelmAllValues() {
+        helmIncludeAllValues.toggle()
+        helmValuesYAML = nil
+        loadSelectedHelmDetail(force: true)
+    }
+
+    func loadSelectedHelmDetail(force: Bool = false) {
+        guard let release = selectedHelmRelease else { return }
+        helmDetailTask?.cancel()
+
+        switch helmDetailTab {
+        case .values:
+            if !force && helmValuesYAML != nil { return }
+            isLoadingHelmDetail = true
+            helmDetailError = nil
+            helmDetailTask = Task { [weak self] in
+                guard let self else { return }
+                let result = await self.helmReader.releaseValues(
+                    context: self.context,
+                    namespace: release.namespace,
+                    name: release.name,
+                    allValues: self.helmIncludeAllValues
+                )
+                guard !Task.isCancelled else { return }
+                self.isLoadingHelmDetail = false
+                switch result {
+                case .success(let yaml):
+                    self.helmValuesYAML = yaml
+                case .failure(let error):
+                    self.helmDetailError = error.localizedDescription
+                }
+            }
+
+        case .manifest:
+            if !force && helmManifestYAML != nil { return }
+            isLoadingHelmDetail = true
+            helmDetailError = nil
+            helmDetailTask = Task { [weak self] in
+                guard let self else { return }
+                let result = await self.helmReader.releaseManifest(
+                    context: self.context,
+                    namespace: release.namespace,
+                    name: release.name
+                )
+                guard !Task.isCancelled else { return }
+                self.isLoadingHelmDetail = false
+                switch result {
+                case .success(let yaml):
+                    self.helmManifestYAML = yaml
+                case .failure(let error):
+                    self.helmDetailError = error.localizedDescription
+                }
+            }
+
+        case .history:
+            if !force && !helmHistory.isEmpty { return }
+            isLoadingHelmDetail = true
+            helmDetailError = nil
+            helmDetailTask = Task { [weak self] in
+                guard let self else { return }
+                let result = await self.helmReader.releaseHistory(
+                    context: self.context,
+                    namespace: release.namespace,
+                    name: release.name
+                )
+                guard !Task.isCancelled else { return }
+                self.isLoadingHelmDetail = false
+                switch result {
+                case .success(let history):
+                    self.helmHistory = history
+                case .failure(let error):
+                    self.helmDetailError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func rollbackHelmRelease(_ release: HelmReleaseItem, toRevision revision: Int) async -> Bool {
+        isRollingBackHelm = true
+        helmDetailError = nil
+        defer { isRollingBackHelm = false }
+        let result = await helmReader.rollbackRelease(
+            context: context,
+            namespace: release.namespace,
+            name: release.name,
+            revision: revision
+        )
+        switch result {
+        case .success:
+            helmSuccessNotice = "Rolled back \(release.name) to revision #\(revision)"
+            loadHelm(bypassCache: true)
+            loadSelectedHelmDetail(force: true)
+            return true
+        case .failure(let error):
+            helmDetailError = "Rollback failed: \(error.localizedDescription)"
+            return false
+        }
     }
 }
 

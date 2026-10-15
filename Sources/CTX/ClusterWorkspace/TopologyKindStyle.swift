@@ -2,23 +2,16 @@ import CTXCore
 import SwiftUI
 
 extension TopologyGraphNodeKind {
-    var topologyTint: Color {
-        switch self {
-        case .ingress: .orange
-        case .service: .blue
-        case .workload: .purple
-        case .pod, .podGroup, .terminalGroup, .overflow: .teal
-        case .pvc: .green
-        case .hpa: .pink
-        }
+    public var topologyTint: Color {
+        Color(hex: defaultHexColor)
     }
 }
 
 extension TopologyNodeHealthState {
-    var topologyTint: Color {
-        if isFailed { return .red }
-        if isDegraded { return .orange }
-        if isIdle { return .gray }
-        return .green
+    public var topologyTint: Color {
+        if isFailed { return Color(hex: "#f85149") } // Red
+        if isDegraded { return Color(hex: "#d29922") } // Amber
+        if isIdle { return Color.secondary }
+        return Color(hex: "#3fb950") // Green
     }
 }

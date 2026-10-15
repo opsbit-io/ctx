@@ -131,12 +131,38 @@ final class ClusterWorkspaceViewModel: ObservableObject {
     @Published var helmResult: HelmReadResult?
     @Published var helmList: KubernetesResourceList?
     @Published var isLoadingHelm = false
+
+    public enum HelmDetailTab: String, CaseIterable, Identifiable {
+        case values = "Values"
+        case manifest = "Manifest"
+        case history = "History"
+        public var id: String { rawValue }
+    }
+
+    @Published var selectedHelmRelease: HelmReleaseItem?
+    @Published var helmDetailTab: HelmDetailTab = .values
+    @Published var helmIncludeAllValues: Bool = false
+    @Published var helmValuesYAML: String?
+    @Published var helmManifestYAML: String?
+    @Published var helmHistory: [HelmRevisionItem] = []
+    @Published var isLoadingHelmDetail: Bool = false
+    @Published var helmDetailError: String?
+    var helmDetailTask: Task<Void, Never>?
+    @Published var isRollingBackHelm: Bool = false
+    @Published var helmSuccessNotice: String? = nil
     @Published var telemetry = ClusterTelemetryMetrics()
     /// An active "show me only the rows this summary counted" filter. Cleared by the
     /// chip above the table, and automatically whenever the scope changes underneath
     /// it — a namespace switch or a section change would otherwise leave a filter
     /// pinned to ids that are no longer on screen.
     @Published var resourceFocus: ResourceFocus?
+    // FinOps & Cloud Cost Optimization Center
+    @Published var finopsWindow: FinOpsTimeWindow = .d7
+    @Published var finopsAggregation: FinOpsAggregation = .namespace
+    @Published var finopsPricing: CloudPricingProfile = .aws
+    @Published var finopsSearchText: String = ""
+    var cachedFinOpsReport: FinOpsReport? = nil
+    var lastFinOpsCacheKey: String = ""
     // Phase 6: Spotlight Command Palette & Quick Look Overlay
     @Published var isCommandPalettePresented: Bool = false
     @Published var quickLookResource: KubernetesResourceRow? = nil
@@ -417,6 +443,8 @@ final class ClusterWorkspaceViewModel: ObservableObject {
             loadHelm(bypassCache: bypassCache)
         case .gitops:
             loadGitOps(bypassCache: bypassCache)
+        case .finops:
+            loadFinOpsResources(bypassCache: bypassCache)
         default:
             guard let kind = selectedSection.resourceKind else { return }
             loadResource(kind: kind, bypassCache: bypassCache)
@@ -521,6 +549,7 @@ final class ClusterWorkspaceViewModel: ObservableObject {
         switch section {
         case .gitops: return isLoadingGitOps
         case .helm: return isLoadingHelm
+        case .finops: return isLoadingFinOps
         default:
             guard let kind = section.resourceKind else { return false }
             return loadingResourceKinds.contains(kind)

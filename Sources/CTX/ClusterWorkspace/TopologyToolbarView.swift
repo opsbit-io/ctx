@@ -1,31 +1,25 @@
 import CTXCore
 import SwiftUI
 
-/// The map's own controls: lineage search, what is drawn, the two filters, the
-/// legend and zoom.
-///
-/// Narrowing the window drops *labels*, never controls. Hiding a filter behind
-/// an overflow menu at small widths costs the user the one thing the toolbar is
-/// for — seeing at a glance whether a filter is on — so each tier below shows
-/// the same seven affordances and only spends less width saying what they are.
+/// The map's top controls: lineage search, professional category dropdown filter,
+/// health/status filter, count badge, legend popover, and grouped zoom controls.
 struct TopologyToolbarView: View {
     @Binding var searchText: String
     @Binding var needsAttentionOnly: Bool
     @Binding var showsInactive: Bool
+    @Binding var selectedCategory: TopologyNodeCategory?
     let scale: CGFloat
     let counts: TopologyCountSummary
     @Binding var command: TopologyMapCommand?
+    var categoryCounts: [TopologyNodeCategory: Int] = [:]
+
     @State private var showsLegend = false
     @State private var showsCounts = false
 
-    /// Widest first. `ViewThatFits` compares each candidate's *ideal* width, so
-    /// every cluster that must not shrink is `fixedSize`d: a Label allowed to
-    /// truncate reports a tiny ideal width, the wide bar then claims to fit at
-    /// any size, and the controls clip instead of stepping down to the icons.
     var body: some View {
         ViewThatFits(in: .horizontal) {
             labelledToolbar
-            iconToolbar
+            compactToolbar
             stackedToolbar
         }
         .popover(isPresented: $showsLegend, arrowEdge: .bottom) {
@@ -40,25 +34,21 @@ struct TopologyToolbarView: View {
         }
     }
 
+    // MARK: - Toolbar Layouts
+
     private var labelledToolbar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             searchField("Find object; use +name+ for lineage")
-                .frame(minWidth: 220, idealWidth: 300, maxWidth: 360)
+                .frame(minWidth: 200, idealWidth: 260, maxWidth: 320)
+
+            categoryFilterMenu
+
+            statusFilterMenu
+
             Spacer(minLength: 8)
-            HStack(spacing: 10) {
-                countLabel
-                filterButton(
-                    title: "Needs attention",
-                    systemImage: "exclamationmark.triangle",
-                    isOn: $needsAttentionOnly,
-                    tint: .orange
-                )
-                filterButton(
-                    title: "Show inactive",
-                    systemImage: "moon.zzz",
-                    isOn: $showsInactive,
-                    tint: .secondary
-                )
+
+            HStack(spacing: 8) {
+                countBadge
                 legendButton
                 labelledZoomControls
             }
@@ -66,100 +56,265 @@ struct TopologyToolbarView: View {
         }
     }
 
-    private var iconToolbar: some View {
-        HStack(spacing: 8) {
-            // A shorter prompt, because a placeholder cut off mid-word teaches
-            // the syntax less well than a brief one that fits. The full
-            // explanation stays in the field's tooltip either way.
-            searchField("Find object · +name+")
-                .frame(minWidth: 150, maxWidth: 360)
-                .layoutPriority(1)
-            Spacer(minLength: 8)
-            iconControls
-        }
-    }
-
-    /// The last resort, so the field asks for no minimum width of its own and
-    /// the icon row — which cannot shrink further without losing a control —
-    /// gets a line to itself.
-    private var stackedToolbar: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            searchField("Find object · +name+")
-                .frame(maxWidth: .infinity)
-            HStack(spacing: 8) {
-                iconControls
-                Spacer(minLength: 0)
-            }
-        }
-    }
-
-    private var iconControls: some View {
+    private var compactToolbar: some View {
         HStack(spacing: 6) {
+            searchField("Find object · +name+")
+                .frame(minWidth: 160, maxWidth: 240)
+                .layoutPriority(1)
+
+            categoryFilterMenu
+
+            statusFilterMenu
+
+            Spacer(minLength: 6)
+
             countBadge
-            iconButton(
-                title: "Needs attention",
-                systemImage: "exclamationmark.triangle",
-                isOn: $needsAttentionOnly,
-                tint: .orange
-            )
-            iconButton(
-                title: "Show inactive",
-                systemImage: "moon.zzz",
-                isOn: $showsInactive,
-                tint: .secondary
-            )
-            CTXIconActionButton(title: "Map legend", systemImage: "info.circle") {
-                showsLegend.toggle()
-            }
-            zoomIconControls
+            legendButton
+            labelledZoomControls
         }
-        .fixedSize()
     }
+
+    private var stackedToolbar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                searchField("Find object · +name+")
+                    .frame(maxWidth: .infinity)
+                legendButton
+                labelledZoomControls
+            }
+            HStack(spacing: 6) {
+                categoryFilterMenu
+                statusFilterMenu
+                Spacer()
+                countBadge
+            }
+        }
+    }
+
+    // MARK: - Search Field
 
     private func searchField(_ placeholder: String) -> some View {
         CTXSearchField(placeholder: placeholder, text: $searchText)
-        .help("""
-        Type part of a name to show matching objects.
-        name+ includes downstream dependents.
-        +name includes upstream dependencies.
-        +name+ includes both directed paths.
-        """)
+            .help("""
+            Type part of a name to show matching objects.
+            name+ includes downstream dependents.
+            +name includes upstream dependencies.
+            +name+ includes both directed paths.
+            """)
     }
 
-    private var countLabel: some View {
-        Button {
-            showsCounts.toggle()
+    // MARK: - Professional Dropdown Filter Menus
+
+    private var categoryFilterMenu: some View {
+        Menu {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    selectedCategory = nil
+                }
+            } label: {
+                HStack {
+                    Text(allCategoriesTitle)
+                    if selectedCategory == nil {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+
+            Divider()
+
+            ForEach(TopologyNodeCategory.allCases, id: \.self) { cat in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        selectedCategory = cat
+                    }
+                } label: {
+                    HStack {
+                        let count = categoryCounts[cat] ?? 0
+                        Text(count > 0 ? "\(cat.title) (\(count))" : cat.title)
+                        if selectedCategory == cat {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
         } label: {
-            Text(counts.medium)
-                .font(.system(.caption2, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            HStack(spacing: 6) {
+                if let selectedCategory {
+                    KubernetesIconView(
+                        icon: KubernetesVectorIcon(category: selectedCategory),
+                        size: 13,
+                        tint: Color(hex: selectedCategory.defaultHexColor),
+                        filledBackground: false
+                    )
+                    Text(selectedCategory.title)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.primary)
+                    if let count = categoryCounts[selectedCategory], count > 0 {
+                        Text("\(count)")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color(hex: selectedCategory.defaultHexColor))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color(hex: selectedCategory.defaultHexColor).opacity(0.18), in: Capsule())
+                    }
+                } else {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("Category: All")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.primary)
+                }
+
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                selectedCategory != nil
+                    ? Color(hex: selectedCategory!.defaultHexColor).opacity(0.12)
+                    : Color.primary.opacity(0.05),
+                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(
+                        selectedCategory != nil
+                            ? Color(hex: selectedCategory!.defaultHexColor).opacity(0.35)
+                            : Color.primary.opacity(0.12),
+                        lineWidth: 1
+                    )
+            }
         }
-        .buttonStyle(.plain)
-        .focusable(false)
-        .help(counts.full)
-        .accessibilityLabel("Map counts")
-        .accessibilityValue(counts.full)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Filter topology by category")
     }
 
-    /// Numbers rather than a glyph. There is no icon for "42 of 350 drawn", and
-    /// a symbol standing in for one reads as a button whose purpose has to be
-    /// guessed; the ratio itself is both the label and the information.
+    private var allCategoriesTitle: String {
+        let total = categoryCounts.values.reduce(0, +)
+        return total > 0 ? "All Categories (\(total))" : "All Categories"
+    }
+
+    private var statusFilterMenu: some View {
+        let hasActiveFilter = needsAttentionOnly || showsInactive
+        return Menu {
+            Section("Status & Health") {
+                Button {
+                    needsAttentionOnly.toggle()
+                } label: {
+                    HStack {
+                        Text("Needs Attention Only")
+                        if needsAttentionOnly {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+
+            Section("Lifecycle") {
+                Button {
+                    showsInactive.toggle()
+                } label: {
+                    HStack {
+                        Text("Show Inactive / Completed")
+                        if showsInactive {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+
+            if hasActiveFilter {
+                Divider()
+                Button {
+                    needsAttentionOnly = false
+                    showsInactive = false
+                } label: {
+                    Text("Reset Filters")
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                if needsAttentionOnly && showsInactive {
+                    Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
+                    Text("2 Filters Active")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
+                } else if needsAttentionOnly {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
+                    Text("Needs Attention")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
+                } else if showsInactive {
+                    Image(systemName: "moon.zzz.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.purple)
+                    Text("Inactive Included")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.purple)
+                } else {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("Filter")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.primary)
+                }
+
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                hasActiveFilter
+                    ? (needsAttentionOnly ? Color.orange.opacity(0.12) : Color.purple.opacity(0.12))
+                    : Color.primary.opacity(0.05),
+                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(
+                        hasActiveFilter
+                            ? (needsAttentionOnly ? Color.orange.opacity(0.35) : Color.purple.opacity(0.35))
+                            : Color.primary.opacity(0.12),
+                        lineWidth: 1
+                    )
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Filter by health and lifecycle state")
+    }
+
+    // MARK: - Count Badge & Legend
+
     private var countBadge: some View {
         Button {
             showsCounts.toggle()
         } label: {
-            Text(counts.short)
-                .font(.system(.caption2, design: .rounded, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.horizontal, 8)
-                .frame(minWidth: 34, minHeight: 28)
-                .background(Color.secondary.opacity(0.13), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(Color.secondary.opacity(0.24), lineWidth: 0.75)
-                }
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 6, height: 6)
+                Text(counts.medium)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4.5)
+            .background(Color.primary.opacity(0.05), in: Capsule())
+            .overlay {
+                Capsule().stroke(Color.primary.opacity(0.10), lineWidth: 1)
+            }
         }
         .buttonStyle(.plain)
         .focusable(false)
@@ -172,127 +327,161 @@ struct TopologyToolbarView: View {
         Button {
             showsLegend.toggle()
         } label: {
-            Image(systemName: "info.circle")
+            HStack(spacing: 4) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 11, weight: .medium))
+                Text("Legend")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(showsLegend ? Color.accentColor : Color.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4.5)
+            .background(showsLegend ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(showsLegend ? Color.accentColor.opacity(0.3) : Color.primary.opacity(0.10), lineWidth: 1)
+            }
         }
-        .buttonStyle(CTXSecondaryButton())
-        .help("Map legend")
+        .buttonStyle(.plain)
         .accessibilityLabel("Map legend")
     }
 
-    private func filterButton(
-        title: String,
-        systemImage: String,
-        isOn: Binding<Bool>,
-        tint: Color
-    ) -> some View {
-        Button {
-            isOn.wrappedValue.toggle()
-        } label: {
-            Label(title, systemImage: isOn.wrappedValue ? "\(systemImage).fill" : systemImage)
-                .foregroundStyle(isOn.wrappedValue ? tint : .primary)
-        }
-        .buttonStyle(CTXSecondaryButton())
-        .accessibilityValue(isOn.wrappedValue ? "On" : "Off")
-    }
+    // MARK: - Zoom Controls
 
-    private func iconButton(
-        title: String,
-        systemImage: String,
-        isOn: Binding<Bool>,
-        tint: Color
-    ) -> some View {
-        CTXIconActionButton(
-            title: title,
-            systemImage: isOn.wrappedValue ? "\(systemImage).fill" : systemImage,
-            tint: isOn.wrappedValue ? tint : .primary,
-            isOn: isOn.wrappedValue
-        ) {
-            isOn.wrappedValue.toggle()
-        }
-        .accessibilityValue(isOn.wrappedValue ? "On" : "Off")
-    }
-
-    /// The shortcuts these buttons name are mounted by the pane, not here: one
-    /// attached to a tier that is off screen would leave ⌘0 unbound, and one
-    /// attached to a tier `ViewThatFits` merely measures would bind it twice.
     private var labelledZoomControls: some View {
-        HStack(spacing: 4) {
-            Button { command = .zoomOut } label: {
-                Image(systemName: "minus.magnifyingglass")
-            }
-            .buttonStyle(CTXSecondaryButton())
-            .help("Zoom out (⌘−)")
-            .accessibilityLabel("Zoom out")
-
-            Text("\(Int(scale * 100))%")
-                .font(.system(.caption2, design: .monospaced, weight: .semibold))
-                .frame(width: 40)
-                .contentTransition(.numericText())
-
-            Button { command = .zoomIn } label: {
-                Image(systemName: "plus.magnifyingglass")
-            }
-            .buttonStyle(CTXSecondaryButton())
-            .help("Zoom in (⌘+)")
-            .accessibilityLabel("Zoom in")
-
-            Button { command = .fit } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-            }
-            .buttonStyle(CTXSecondaryButton())
-            .help("Fit map (⌘0)")
-            .accessibilityLabel("Fit map")
-        }
-    }
-
-    private var zoomIconControls: some View {
-        HStack(spacing: 6) {
-            CTXIconActionButton(title: "Zoom out (⌘−)", systemImage: "minus.magnifyingglass") {
+        HStack(spacing: 2) {
+            Button {
                 command = .zoomOut
+            } label: {
+                Image(systemName: "minus")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
             }
-            .accessibilityLabel("Zoom out")
-            .accessibilityValue("\(Int(scale * 100)) percent")
+            .buttonStyle(.plain)
+            .help("Zoom out (⌘-)")
 
-            CTXIconActionButton(title: "Zoom in (⌘+)", systemImage: "plus.magnifyingglass") {
+            Text("\(Int(round(scale * 100)))%")
+                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 36)
+                .help("Zoom level")
+
+            Button {
                 command = .zoomIn
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
             }
-            .accessibilityLabel("Zoom in")
-            .accessibilityValue("\(Int(scale * 100)) percent")
+            .buttonStyle(.plain)
+            .help("Zoom in (⌘+)")
 
-            CTXIconActionButton(title: "Fit map (⌘0)", systemImage: "arrow.up.left.and.arrow.down.right") {
+            Divider()
+                .frame(height: 12)
+                .padding(.horizontal, 2)
+
+            Button {
                 command = .fit
+            } label: {
+                Image(systemName: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
             }
-            .accessibilityLabel("Fit map")
+            .buttonStyle(.plain)
+            .help("Fit map to window")
         }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+        }
+        .fixedSize()
     }
 }
 
+// MARK: - Topology Legend View
+
 private struct TopologyLegendView: View {
+    private let primaryKinds: [TopologyGraphNodeKind] = [
+        .deployment, .statefulSet, .daemonSet, .pod, .cronJob, .job,
+        .service, .ingress, .networkPolicy,
+        .pvc, .pv, .storageClass,
+        .configMap, .secret,
+        .serviceAccount, .role, .hpa
+    ]
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Map legend")
-                .font(.headline)
-
-            ForEach(TopologyGraphNodeKind.allCases, id: \.self) { kind in
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 8) {
-                    Text(kind.code)
-                        .font(.system(.caption2, design: .rounded, weight: .heavy))
-                        .foregroundStyle(kind.topologyTint)
-                        .frame(width: 34, height: 16)
-                        .background(kind.topologyTint.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
-                    Label(kind.title, systemImage: kind.systemImage)
-                        .font(.caption2)
+                    KubernetesIconView(icon: .topology, size: 16, tint: .accentColor, filledBackground: false)
+                    Text("Kubernetes Topology Legend")
+                        .font(.headline)
                 }
+
+                Text("Resources")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(primaryKinds, id: \.self) { kind in
+                        HStack(spacing: 8) {
+                            KubernetesIconView(nodeKind: kind, size: 16)
+                            Text(kind.title)
+                                .font(.caption2)
+                                .lineLimit(1)
+                            Spacer()
+                        }
+                    }
+                }
+
+                Divider()
+
+                Text("Relationships & Edges")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    edgeLegendRow(title: "Workload Ownership (owns/manages)", colorHex: "#6e7681", isDashed: false)
+                    edgeLegendRow(title: "Service Routing (fronts/selects)", colorHex: "#d29922", isDashed: true)
+                    edgeLegendRow(title: "Ingress Rules (routes)", colorHex: "#e3b341", isDashed: true)
+                    edgeLegendRow(title: "Storage (mounts)", colorHex: "#db6d28", isDashed: true)
+                    edgeLegendRow(title: "Configuration / Secrets (mounts)", colorHex: "#f778ba", isDashed: true)
+                    edgeLegendRow(title: "Autoscaling (scales)", colorHex: "#3fb0ac", isDashed: true)
+                }
+
+                Divider()
+
+                Text("Select any card on the map to isolate its full upstream dependencies and downstream dependents. Drag canvas to pan and scroll or pinch to zoom.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            Divider()
-
-            Text("Select an object to highlight its upstream dependencies and downstream dependents. Drag to pan and scroll or pinch to zoom.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .padding(16)
         }
-        .padding(14)
-        .frame(width: 300)
+        .frame(width: 400, height: 440)
+    }
+
+    private func edgeLegendRow(title: String, colorHex: String, isDashed: Bool) -> some View {
+        HStack(spacing: 8) {
+            Path { path in
+                path.move(to: CGPoint(x: 0, y: 5))
+                path.addLine(to: CGPoint(x: 24, y: 5))
+            }
+            .stroke(
+                Color(hex: colorHex),
+                style: StrokeStyle(lineWidth: 2, dash: isDashed ? [4, 3] : [])
+            )
+            .frame(width: 24, height: 10)
+
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
     }
 }

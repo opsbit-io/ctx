@@ -195,9 +195,7 @@ public enum ClusterTopologyGraphBuilder {
             }
         }
 
-        // Only PVCs some pod actually mounts become nodes. The old model attached
-        // every PVC in the namespace to every service in it — one 4-PVC namespace
-        // with 10 services rendered 40 storage cards for 4 volumes.
+        // Only PVCs some pod actually mounts become nodes.
         let pvcsByKey = Dictionary(pvcs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var mountedPVCs: [String: KubernetesResourceRow] = [:]
         for pod in pods {
@@ -227,6 +225,70 @@ public enum ClusterTopologyGraphBuilder {
                 row: pvc,
                 issueCount: issues
             ))
+        }
+
+        // ConfigMaps referenced by pods (volumes and envFrom/env).
+        var mountedConfigMaps: [String: Set<String>] = [:]
+        for pod in pods {
+            guard !isCancelled() else { return ClusterTopologyGraph(nodes: [], edges: []) }
+            for cmName in TopologyRowReferences.names(in: pod.cells["ConfigMaps"]) {
+                mountedConfigMaps[cmName, default: []].insert(pod.id)
+            }
+        }
+        for (cmName, podIDs) in mountedConfigMaps.sorted(by: { $0.key < $1.key }) {
+            guard !isCancelled() else { return ClusterTopologyGraph(nodes: [], edges: []) }
+            let ns = pods.first?.ns ?? ""
+            let id = TopologyGraphNode.id(kind: .configMap, rowID: "\(ns)/\(cmName)")
+            let issues = diagnostics?.issuesByResourceID["\(ns)/\(cmName)"]?.count ?? 0
+            nodes.append(TopologyGraphNode(
+                id: id,
+                kind: .configMap,
+                name: cmName,
+                namespace: ns,
+                subtitle: "\(podIDs.count) mount\(podIDs.count == 1 ? "" : "s")",
+                health: .healthy,
+                row: KubernetesResourceRow(id: id, cells: ["Namespace": ns, "Name": cmName, "Kind": "ConfigMap"]),
+                issueCount: issues
+            ))
+            for podID in podIDs.sorted() {
+                edges.append(TopologyGraphEdge(
+                    source: TopologyGraphNode.id(kind: .pod, rowID: podID),
+                    target: id,
+                    kind: .mounts
+                ))
+            }
+        }
+
+        // Secrets referenced by pods (volumes and envFrom/env).
+        var mountedSecrets: [String: Set<String>] = [:]
+        for pod in pods {
+            guard !isCancelled() else { return ClusterTopologyGraph(nodes: [], edges: []) }
+            for secName in TopologyRowReferences.names(in: pod.cells["Secrets"]) {
+                mountedSecrets[secName, default: []].insert(pod.id)
+            }
+        }
+        for (secName, podIDs) in mountedSecrets.sorted(by: { $0.key < $1.key }) {
+            guard !isCancelled() else { return ClusterTopologyGraph(nodes: [], edges: []) }
+            let ns = pods.first?.ns ?? ""
+            let id = TopologyGraphNode.id(kind: .secret, rowID: "\(ns)/\(secName)")
+            let issues = diagnostics?.issuesByResourceID["\(ns)/\(secName)"]?.count ?? 0
+            nodes.append(TopologyGraphNode(
+                id: id,
+                kind: .secret,
+                name: secName,
+                namespace: ns,
+                subtitle: "\(podIDs.count) mount\(podIDs.count == 1 ? "" : "s")",
+                health: .healthy,
+                row: KubernetesResourceRow(id: id, cells: ["Namespace": ns, "Name": secName, "Kind": "Secret"]),
+                issueCount: issues
+            ))
+            for podID in podIDs.sorted() {
+                edges.append(TopologyGraphEdge(
+                    source: TopologyGraphNode.id(kind: .pod, rowID: podID),
+                    target: id,
+                    kind: .mounts
+                ))
+            }
         }
 
         // HPA → its scale target. Dropped when the target isn't loaded, rather

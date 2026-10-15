@@ -202,7 +202,11 @@ private struct LifecycleSheetContent: View {
         case .missingCLI(let request):
             MissingCLIToolSheet(store: store, request: request, origin: surface)
         case .inAppAuth(let request):
-            InAppAuthWebModalView(url: request.url, userEmail: request.email) { result in
+            InAppAuthWebModalView(
+                url: request.url,
+                userCode: request.userCode,
+                userEmail: request.email
+            ) { result in
                 switch result {
                 case .success:
                     store.consumePresentation(id: presentationID, from: surface)
@@ -285,7 +289,7 @@ private extension ProfilePresentationRoute {
         case .missingCLI(let request):
             "missingCLI.\(request.tool.binary)"
         case .inAppAuth(let request):
-            "auth.\(request.url.absoluteString)"
+            "auth.\(request.url.absoluteString).\(request.userCode ?? "")"
         case .pendingFolderAssignment(let profile):
             "folderAssignment.\(profile.id)"
         case .operationError, .folderDeletionConfirmation, .providerSignOutConfirmation:

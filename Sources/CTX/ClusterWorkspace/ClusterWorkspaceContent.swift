@@ -31,6 +31,12 @@ struct ClusterWorkspaceContent: View {
             case .topology:
                 ClusterTopologyView(viewModel: viewModel)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .finops:
+                ScrollView {
+                    ClusterFinOpsView(viewModel: viewModel)
+                        .padding(22)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             case .exports:
                 ScrollView {
                     ClusterExportsView(viewModel: viewModel)
@@ -49,6 +55,9 @@ struct ClusterWorkspaceContent: View {
                         .padding(22)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+            case .helm:
+                ClusterHelmView(viewModel: viewModel)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             default:
                 // The page scrolls as one: toolbar, summary and table together.
                 // Giving the table its own vertical scroll view instead would let
@@ -67,7 +76,7 @@ struct ClusterWorkspaceContent: View {
         .id(viewModel.selectedSection)
         // Both Overview and Nodes read live utilisation, so the poll follows either.
         .task(id: viewModel.selectedSection) {
-            if viewModel.selectedSection == .nodes {
+            if viewModel.selectedSection == .nodes || viewModel.selectedSection == .finops {
                 viewModel.startTelemetryUpdates()
             }
         }

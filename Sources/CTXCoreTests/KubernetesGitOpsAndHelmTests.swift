@@ -392,6 +392,49 @@ func testHelmListAsksForEveryReleaseState() async throws {
 /// "(all keys)". Identical ids break `ForEach` identity in SwiftUI.
 
 
+
+func testHelmHistoryJSONParsesRevisions() throws {
+    let json = """
+    [
+      {"revision":1,"updated":"2024-05-01 09:00:00.0 +0000 UTC","status":"superseded","chart":"nginx-1.0.0","app_version":"1.21.0","description":"Install complete"},
+      {"revision":2,"updated":"2024-05-04 11:22:33.0 +0000 UTC","status":"deployed","chart":"nginx-1.1.0","app_version":"1.22.0","description":"Upgrade complete"}
+    ]
+    """
+    let revisions = KubernetesHelmReader.parseHelmHistoryJSON(json)
+    assert(revisions.count == 2, "Expected 2 revisions, got \(revisions.count)")
+    assert(revisions[0].revision == 2, "Revisions should be sorted descending")
+    assert(revisions[0].status == "deployed")
+    assert(revisions[0].chart == "nginx-1.1.0")
+    assert(revisions[0].appVersion == "1.22.0")
+    assert(revisions[0].description == "Upgrade complete")
+    assert(revisions[1].revision == 1)
+    assert(revisions[1].status == "superseded")
+}
+
+func testHelmValuesAndManifestCommandConstruction() async throws {
+    let kubectl = ScriptedKubectl()
+    kubectl.defaultOutput = .success("key: value\n")
+    let reader = KubernetesHelmReader(kubectl: kubectl, resolveBinary: { _ in "/mock/helm" })
+    
+    _ = await reader.releaseValues(context: testKubernetesContext(), namespace: "prod", name: "my-app", allValues: false)
+    let valArgs = kubectl.commands.last?.arguments ?? []
+    assert(valArgs.contains("get") && valArgs.contains("values") && valArgs.contains("my-app"))
+    assert(valArgs.contains("prod"))
+    assert(!valArgs.contains("--all"))
+
+    _ = await reader.releaseValues(context: testKubernetesContext(), namespace: "prod", name: "my-app", allValues: true)
+    let allValArgs = kubectl.commands.last?.arguments ?? []
+    assert(allValArgs.contains("--all"))
+
+    _ = await reader.releaseManifest(context: testKubernetesContext(), namespace: "prod", name: "my-app")
+    let manArgs = kubectl.commands.last?.arguments ?? []
+    assert(manArgs.contains("get") && manArgs.contains("manifest") && manArgs.contains("my-app"))
+
+    _ = await reader.releaseHistory(context: testKubernetesContext(), namespace: "prod", name: "my-app")
+    let histArgs = kubectl.commands.last?.arguments ?? []
+    assert(histArgs.contains("history") && histArgs.contains("my-app") && histArgs.contains("json"))
+}
+
 func runKubernetesGitOpsAndHelmTests() async throws {
     try await testGitOpsIsReadClusterWideRegardlessOfSelectedNamespace()
     try await testGitOpsPartialFailureKeepsAppsAndReportsIncompleteness()
@@ -411,4 +454,6 @@ func runKubernetesGitOpsAndHelmTests() async throws {
     try testHelmListJSONParsesRealReleaseFields()
     try testHelmReleaseSecretLabelsKeepOnlyTheCurrentRevision()
     try await testHelmSecretFallbackNeverRequestsSecretValues()
+    try testHelmHistoryJSONParsesRevisions()
+    try await testHelmValuesAndManifestCommandConstruction()
 }
