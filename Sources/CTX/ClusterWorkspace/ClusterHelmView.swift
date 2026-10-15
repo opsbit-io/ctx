@@ -19,7 +19,6 @@ struct ClusterHelmView: View {
     @State private var selectedKindFilter: String? = nil
     @State private var rollbackCandidate: HelmRevisionItem? = nil
     @State private var isShowingRollbackAlert = false
-    @State private var copyFeedbackText: String? = nil
 
     private var releases: [HelmReleaseItem] {
         viewModel.helmResult?.items ?? []
@@ -519,6 +518,8 @@ struct ClusterHelmView: View {
                                 .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
                             Text(tab.rawValue)
                                 .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                         }
                         .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                         .padding(.horizontal, 10)
@@ -538,6 +539,7 @@ struct ClusterHelmView: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(Color.secondary.opacity(0.16), lineWidth: 0.75)
             }
+            .fixedSize()
 
             Spacer()
 
@@ -552,6 +554,8 @@ struct ClusterHelmView: View {
                         Text("User Values")
                             .font(.system(size: 11, weight: !viewModel.helmIncludeAllValues ? .semibold : .regular))
                             .foregroundStyle(!viewModel.helmIncludeAllValues ? Color.primary : Color.secondary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 9)
                             .padding(.vertical, 4.5)
                             .background(
@@ -570,6 +574,8 @@ struct ClusterHelmView: View {
                         Text("All Computed (--all)")
                             .font(.system(size: 11, weight: viewModel.helmIncludeAllValues ? .semibold : .regular))
                             .foregroundStyle(viewModel.helmIncludeAllValues ? Color.primary : Color.secondary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 9)
                             .padding(.vertical, 4.5)
                             .background(
@@ -586,60 +592,7 @@ struct ClusterHelmView: View {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .stroke(Color.secondary.opacity(0.16), lineWidth: 0.75)
                 }
-            }
-
-            // In-code search inside values & manifest
-            if viewModel.helmDetailTab == .values || viewModel.helmDetailTab == .manifest {
-                HStack(spacing: 5) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    TextField("Search in code...", text: $codeSearchText)
-                        .textFieldStyle(.plain)
-                        .font(.caption)
-                        .frame(width: 140)
-                    if !codeSearchText.isEmpty {
-                        Button {
-                            codeSearchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(Color.secondary.opacity(0.18), lineWidth: 0.75)
-                }
-
-                // Copy active YAML button
-                if let content = activeTabContentString, !content.isEmpty {
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(content, forType: .string)
-                        copyFeedbackText = "Copied!"
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            copyFeedbackText = nil
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: copyFeedbackText != nil ? "checkmark" : "doc.on.doc")
-                                .font(.caption2)
-                            Text(copyFeedbackText ?? "Copy")
-                                .font(.caption2.weight(.medium))
-                        }
-                        .foregroundStyle(copyFeedbackText != nil ? .green : .primary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
+                .fixedSize()
             }
         }
         .padding(.horizontal, 16)
@@ -651,14 +604,6 @@ struct ClusterHelmView: View {
         case .values: return "slider.horizontal.3"
         case .manifest: return "doc.text.fill"
         case .history: return "clock.arrow.circlepath"
-        }
-    }
-
-    private var activeTabContentString: String? {
-        switch viewModel.helmDetailTab {
-        case .values: return viewModel.helmValuesYAML
-        case .manifest: return viewModel.helmManifestYAML
-        case .history: return nil
         }
     }
 
@@ -702,8 +647,52 @@ struct ClusterHelmView: View {
     // MARK: - Values Tab View
 
     private var valuesTabView: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 0) {
             if let yaml = viewModel.helmValuesYAML {
+                let lineCount = yaml.split(separator: "\n", omittingEmptySubsequences: false).count
+                HStack(spacing: 8) {
+                    Text(viewModel.helmIncludeAllValues ? "All Computed Values (\(lineCount) lines)" : "User Values (\(lineCount) lines)")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    // In-code search field
+                    HStack(spacing: 5) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        TextField("Search in values...", text: $codeSearchText)
+                            .textFieldStyle(.plain)
+                            .font(.caption)
+                            .frame(width: 140)
+                        if !codeSearchText.isEmpty {
+                            Button {
+                                codeSearchText = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Color.secondary.opacity(0.18), lineWidth: 0.75)
+                    }
+
+                    // Native CTX Copy Icon Button with spring checkmark animation
+                    CTXCopyIconButton(value: yaml)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+
+                Divider().opacity(0.3)
+
                 codeViewer(yaml)
             } else if viewModel.isLoadingHelmDetail {
                 CTXLoadingStateView(
@@ -745,15 +734,17 @@ struct ClusterHelmView: View {
         }
     }
 
-    // MARK: - Manifest Tab View with Organized Kind Filter
+    // MARK: - Manifest Tab View with Organized Kind Filter & Search
 
     private var manifestTabView: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let yaml = viewModel.helmManifestYAML {
                 let kinds = Self.extractManifestKinds(from: yaml)
                 let totalResources = kinds.map(\.count).reduce(0, +)
-                if !kinds.isEmpty {
-                    HStack(spacing: 8) {
+                let filteredYaml = manifestContentForKind(yaml: yaml, kind: selectedKindFilter)
+
+                HStack(spacing: 8) {
+                    if !kinds.isEmpty {
                         // Organized Kind Filter Dropdown
                         Menu {
                             Button {
@@ -785,6 +776,7 @@ struct ClusterHelmView: View {
                                     .foregroundStyle(selectedKindFilter != nil ? Color.accentColor : .secondary)
                                 Text(selectedKindFilter == nil ? "Filter: All Resources (\(totalResources))" : "Kind: \(selectedKindFilter!) (\(kinds.first(where: { $0.kind == selectedKindFilter })?.count ?? 0))")
                                     .font(.caption.weight(.medium))
+                                    .lineLimit(1)
                                 Image(systemName: "chevron.down")
                                     .font(.system(size: 8, weight: .bold))
                                     .foregroundStyle(.secondary)
@@ -809,17 +801,45 @@ struct ClusterHelmView: View {
                             }
                             .buttonStyle(.plain)
                         }
+                    }
 
-                        Spacer()
+                    Spacer()
 
-                        Text("\(totalResources) manifest resources")
+                    // In-code search field
+                    HStack(spacing: 5) {
+                        Image(systemName: "magnifyingglass")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                        TextField("Search in manifest...", text: $codeSearchText)
+                            .textFieldStyle(.plain)
+                            .font(.caption)
+                            .frame(width: 140)
+                        if !codeSearchText.isEmpty {
+                            Button {
+                                codeSearchText = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    Divider().opacity(0.3)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Color.secondary.opacity(0.18), lineWidth: 0.75)
+                    }
+
+                    // Native CTX Copy Icon Button (copies filtered kind or full manifest)
+                    CTXCopyIconButton(value: filteredYaml)
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+
+                Divider().opacity(0.3)
 
                 codeViewer(yaml, kindFilter: selectedKindFilter)
             } else if viewModel.isLoadingHelmDetail {
@@ -840,6 +860,40 @@ struct ClusterHelmView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    private func manifestContentForKind(yaml: String, kind: String?) -> String {
+        guard let kind = kind, !kind.isEmpty else { return yaml }
+        let rawLines = yaml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var result: [String] = []
+        var currentDocKind: String? = nil
+        var currentDocLines: [String] = []
+
+        let flushDoc = { (lines: inout [String], docKind: String?) in
+            if docKind?.lowercased() == kind.lowercased() {
+                if !result.isEmpty {
+                    result.append("---")
+                }
+                result.append(contentsOf: lines)
+            }
+            lines.removeAll(keepingCapacity: true)
+        }
+
+        for line in rawLines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == "---" {
+                flushDoc(&currentDocLines, currentDocKind)
+                currentDocKind = nil
+            } else if trimmed.hasPrefix("kind:") {
+                let parts = trimmed.split(separator: ":", maxSplits: 1)
+                if parts.count == 2 {
+                    currentDocKind = parts[1].trimmingCharacters(in: .whitespaces)
+                }
+            }
+            currentDocLines.append(line)
+        }
+        flushDoc(&currentDocLines, currentDocKind)
+        return result.isEmpty ? yaml : result.joined(separator: "\n")
     }
 
     // MARK: - History Tab View (Pixel-Perfect Column Alignment + Rollback Action)
@@ -1022,35 +1076,39 @@ struct ClusterHelmView: View {
 
         let gutterWidth: CGFloat = linesToDisplay.count > 999 ? 44 : 34
 
-        return ScrollView([.horizontal, .vertical]) {
-            LazyVStack(alignment: .leading, spacing: 1) {
-                ForEach(linesToDisplay) { item in
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        // Fixed-width line number gutter
-                        Text("\(item.number)")
-                            .font(.system(size: 11, weight: .regular, design: .monospaced))
-                            .foregroundStyle(Color.secondary.opacity(0.45))
-                            .frame(width: gutterWidth, alignment: .trailing)
+        return GeometryReader { proxy in
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    ForEach(linesToDisplay) { item in
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            // Fixed-width line number gutter
+                            Text("\(item.number)")
+                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .foregroundStyle(Color.secondary.opacity(0.45))
+                                .frame(width: gutterWidth, alignment: .trailing)
 
-                        // Code line with strict lineLimit and fixedSize to PREVENT word-squishing!
-                        Text(item.text.isEmpty ? " " : item.text)
-                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .foregroundStyle(codeLineColor(item.text))
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .textSelection(.enabled)
+                            // Code line with strict lineLimit and fixedSize to PREVENT word-squishing!
+                            Text(item.text.isEmpty ? " " : item.text)
+                                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                                .foregroundStyle(codeLineColor(item.text))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .textSelection(.enabled)
+                        }
+                        .frame(minHeight: 18, alignment: .leading)
+                        .background(
+                            item.isMatch
+                                ? Color.yellow.opacity(0.22)
+                                : Color.clear
+                        )
                     }
-                    .frame(minHeight: 18, alignment: .leading)
-                    .background(
-                        item.isMatch
-                            ? Color.yellow.opacity(0.22)
-                            : Color.clear
-                    )
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(minWidth: proxy.size.width, maxWidth: .infinity, alignment: .topLeading)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.black.opacity(0.18))
     }
 
