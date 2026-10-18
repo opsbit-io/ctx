@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SidebarView: View {
     @ObservedObject var store: ProfileStore
+    var toggleSidebar: (() -> Void)? = nil
     @Environment(\.openSettings) private var openSettings: OpenSettingsAction
     @State private var expandedGroups: Set<String> = []
     @State private var deleteCandidate: CloudProfile? = nil
@@ -15,9 +16,21 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header Bar: window controls headroom + New Profile / Folder button
-            HStack(spacing: 8) {
+            // Header Bar: window controls headroom + Sidebar Toggle + New Profile / Folder button
+            HStack(spacing: 6) {
                 Spacer()
+
+                Button {
+                    toggleSidebar?()
+                } label: {
+                    Image(systemName: "sidebar.leading")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Toggle Sidebar (⌘⌃S)")
 
                 Menu {
                     Button {
@@ -44,8 +57,7 @@ struct SidebarView: View {
             }
             .padding(.leading, 72)
             .padding(.trailing, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 2)
+            .frame(height: 38)
 
             // Custom Search Bar (No Blue Focus Ring!)
             HStack(spacing: 6) {
