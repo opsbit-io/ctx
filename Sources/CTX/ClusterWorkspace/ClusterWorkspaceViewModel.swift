@@ -81,6 +81,11 @@ final class ClusterWorkspaceViewModel: ObservableObject {
     let yamlApplier: any KubernetesYAMLApplying
     @Published var isPerformingLifecycleAction = false
     @Published var lifecycleActionResult: KubernetesLifecycleActionResult?
+    @Published var execContainers: [String] = []
+    @Published var selectedExecContainer: String?
+    @Published var podExecResult: KubernetesLifecycleActionResult?
+    var podExecDismissTask: Task<Void, Never>?
+    var execContainersPodID: String?
     /// The desired replica count a Deployment/StatefulSet had right before
     /// "Stop" scaled it to zero, keyed by the row's id — what "Start" scales
     /// back to. Lost on dismiss/selection change by design: it describes one
@@ -128,6 +133,11 @@ final class ClusterWorkspaceViewModel: ObservableObject {
         didSet { updateAvailableNamespaces() }
     }
     @Published var isLoadingGitOps = false
+    @Published var selectedGitOpsApp: GitOpsApplicationItem? = nil
+    @Published var gitOpsActionResult: KubernetesLifecycleActionResult?
+    @Published var isPerformingGitOpsAction = false
+    var gitOpsActionDismissTask: Task<Void, Never>?
+    let gitOpsManager: any KubernetesGitOpsManaging
     @Published var helmResult: HelmReadResult?
     @Published var helmList: KubernetesResourceList?
     @Published var isLoadingHelm = false
@@ -148,8 +158,6 @@ final class ClusterWorkspaceViewModel: ObservableObject {
     @Published var isLoadingHelmDetail: Bool = false
     @Published var helmDetailError: String?
     var helmDetailTask: Task<Void, Never>?
-    @Published var isRollingBackHelm: Bool = false
-    @Published var helmSuccessNotice: String? = nil
     @Published var telemetry = ClusterTelemetryMetrics()
     /// An active "show me only the rows this summary counted" filter. Cleared by the
     /// chip above the table, and automatically whenever the scope changes underneath
@@ -157,12 +165,46 @@ final class ClusterWorkspaceViewModel: ObservableObject {
     /// pinned to ids that are no longer on screen.
     @Published var resourceFocus: ResourceFocus?
     // FinOps & Cloud Cost Optimization Center
-    @Published var finopsWindow: FinOpsTimeWindow = .d7
-    @Published var finopsAggregation: FinOpsAggregation = .namespace
-    @Published var finopsPricing: CloudPricingProfile = .aws
+    @Published var finopsWindow: FinOpsTimeWindow = .h24 {
+        didSet {
+            if oldValue != finopsWindow { loadFinOpsCosts(bypassCache: true) }
+        }
+    }
+    @Published var finopsCustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+    @Published var finopsCustomEndDate: Date = Date()
+    @Published var finopsAggregation: FinOpsAggregation = .namespace {
+        didSet {
+            if oldValue != finopsAggregation { loadFinOpsCosts(bypassCache: true) }
+        }
+    }
+    @Published var finopsPricing: CloudPricingProfile = .standard
     @Published var finopsSearchText: String = ""
+    @Published var verifiedFinOpsReport: FinOpsReport?
+    @Published var finopsProviderMessage: String = ""
+    @Published var isLoadingFinOpsProvider = false
+    @Published var isFinOpsProviderDetected = false
+    @Published var isOpenCostSetupSheetPresented = false
+    @Published var isRunningOpenCostPreflight = false
+    @Published var openCostPreflightReport: OpenCostSetupPreflightReport?
+    @Published var isInstallingOpenCost = false
+    @Published var openCostSetupStepLogs: [OpenCostSetupStepLog] = []
+    @Published var openCostSetupResult: OpenCostSetupExecutionResult?
     var cachedFinOpsReport: FinOpsReport? = nil
     var lastFinOpsCacheKey: String = ""
+    var finopsProviderTask: Task<Void, Never>?
+    var finopsProviderRequestID: UUID?
+    var finopsProviderReportsByKey: [String: FinOpsReport] = [:]
+    var finopsProviderLoadedAtByKey: [String: Date] = [:]
+    var openCostSetupTask: Task<Void, Never>?
+
+    func setCustomFinOpsDateRange(start: Date, end: Date) {
+        finopsCustomStartDate = start
+        finopsCustomEndDate = end
+        finopsWindow = .custom
+        cachedFinOpsReport = nil
+        lastFinOpsCacheKey = ""
+        loadFinOpsCosts(bypassCache: true)
+    }
     // Phase 6: Spotlight Command Palette & Quick Look Overlay
     @Published var isCommandPalettePresented: Bool = false
     @Published var quickLookResource: KubernetesResourceRow? = nil
@@ -198,6 +240,8 @@ final class ClusterWorkspaceViewModel: ObservableObject {
     let helmReader: any KubernetesHelmReading
     let specReader: any KubernetesWorkloadSpecReading
     let metricsReader: any KubernetesMetricsReading
+    let costReader: any KubernetesCostReading
+    let openCostSetupService: any KubernetesOpenCostSettingUp
     private let coordinator: ResourceRefreshCoordinator
     private var refreshTask: Task<Void, Never>?
     private var resourceTasks: [KubernetesResourceKind: Task<Void, Never>] = [:]
@@ -221,15 +265,21 @@ final class ClusterWorkspaceViewModel: ObservableObject {
         portForwardService: any KubernetesPortForwarding = KubernetesPortForwardService(),
         auditLog: any AuditLogging = LocalAuditLogService(),
         gitOpsReader: any KubernetesGitOpsReading = KubernetesGitOpsReader(),
+        gitOpsManager: any KubernetesGitOpsManaging = KubernetesGitOpsManager(),
         helmReader: any KubernetesHelmReading = KubernetesHelmReader(),
         specReader: any KubernetesWorkloadSpecReading = KubernetesWorkloadSpecReader(),
         metricsReader: any KubernetesMetricsReading = KubernetesMetricsReader(),
+        costReader: any KubernetesCostReading = KubernetesCostReader(),
+        openCostSetupService: any KubernetesOpenCostSettingUp = KubernetesOpenCostSetupService(),
         lifecycleService: any KubernetesWorkloadLifecycleManaging = KubernetesWorkloadLifecycleService()
     ) {
         self.gitOpsReader = gitOpsReader
+        self.gitOpsManager = gitOpsManager
         self.helmReader = helmReader
         self.specReader = specReader
         self.metricsReader = metricsReader
+        self.costReader = costReader
+        self.openCostSetupService = openCostSetupService
         self.lifecycleService = lifecycleService
         self.context = context
         self.healthService = healthService
@@ -246,6 +296,16 @@ final class ClusterWorkspaceViewModel: ObservableObject {
         self.coordinator = ResourceRefreshCoordinator(reader: resourceReader, staleThreshold: 30, diskCache: SQLiteResourceCache(), backgroundGate: KubectlConcurrencyGate())
         self.selectedNamespace = Self.loadNamespaceSelection(context: context)
         self.overviewSummary = .notChecked(namespace: context.namespace.isEmpty ? "default" : context.namespace)
+        switch context.providerType {
+        case .eks:
+            self.finopsPricing = .aws
+        case .gke:
+            self.finopsPricing = .gcp
+        case .aks:
+            self.finopsPricing = .azure
+        case .local, .unknown:
+            self.finopsPricing = .standard
+        }
         CTXPerfLog.log(step: "workspace_open", contextID: context.id, namespace: "cluster", kind: "workspace", cache: .none, durationMs: 0, outcome: .success)
     }
 
@@ -263,6 +323,8 @@ final class ClusterWorkspaceViewModel: ObservableObject {
         helmTask?.cancel()
         telemetryTask?.cancel()
         telemetryTimerTask?.cancel()
+        finopsProviderTask?.cancel()
+        openCostSetupTask?.cancel()
         topologyBuildTask?.cancel()
         resourceTasks.values.forEach { $0.cancel() }
         yamlTask?.cancel()
@@ -275,11 +337,15 @@ final class ClusterWorkspaceViewModel: ObservableObject {
     }
 
     var title: String {
+        context.cleanClusterName
+    }
+
+    var fullContextName: String {
         context.contextName
     }
 
     var clusterName: String {
-        context.clusterName.isEmpty ? "Unknown cluster" : context.clusterName
+        context.shortSubtitle
     }
 
     var namespace: String {
@@ -367,6 +433,11 @@ final class ClusterWorkspaceViewModel: ObservableObject {
         refreshTask?.cancel()
         gitOpsTask?.cancel()
         helmTask?.cancel()
+        helmDetailTask?.cancel()
+        telemetryTask?.cancel()
+        telemetryTimerTask?.cancel()
+        finopsProviderTask?.cancel()
+        openCostSetupTask?.cancel()
         topologyBuildTask?.cancel()
         isBuildingTopology = false
         // Stopping is an answer too: nothing further is coming, so the pane
@@ -374,6 +445,7 @@ final class ClusterWorkspaceViewModel: ObservableObject {
         hasResolvedTopology = true
         isLoadingGitOps = false
         isLoadingHelm = false
+        isLoadingFinOpsProvider = false
         resourceTasks.values.forEach { $0.cancel() }
         yamlTask?.cancel()
         diffTasks.values.forEach { $0.cancel() }
@@ -386,6 +458,7 @@ final class ClusterWorkspaceViewModel: ObservableObject {
         previousBaselineYAML = nil
         diffingKinds.removeAll()
         isLoadingLogs = false
+        isLoadingHelmDetail = false
     }
 
 
@@ -414,6 +487,10 @@ final class ClusterWorkspaceViewModel: ObservableObject {
         diffResults[resourceKey(kind: kind)]
     }
 
+    static let diagnosticResourceKinds: [KubernetesResourceKind] = [
+        .pods, .nodes, .workloads, .services, .ingress, .configMaps, .secretMetadata, .pvc
+    ]
+
     func refreshCurrentScreen() {
         CTXPerfLog.log(step: "retry", contextID: context.id, namespace: namespace, kind: selectedSection.rawValue.lowercased(), cache: .none, durationMs: 0, outcome: .success)
         if presentation?.tab == .yaml {
@@ -423,14 +500,17 @@ final class ClusterWorkspaceViewModel: ObservableObject {
         } else if selectedSection == .overview {
             refreshOverview(loadNamespacesOnSuccess: true, namespaceBypassCache: true)
         } else if selectedSection == .issues {
-            loadResource(kind: .pods, bypassCache: true)
-            loadResource(kind: .nodes, bypassCache: true)
-            loadResource(kind: .workloads, bypassCache: true)
+            for kind in Self.diagnosticResourceKinds {
+                loadResource(kind: kind, bypassCache: true)
+            }
+        } else if selectedSection == .topology {
+            loadTopologyResources(bypassCache: true)
+        } else if selectedSection == .portForward {
+            loadServicesForPortForward(bypassCache: true)
         } else if selectedSection == .logs {
+            loadPodsForLogs(bypassCache: true)
             if selectedLogPodID != nil {
                 reloadLogs()
-            } else {
-                loadPodsForLogs(bypassCache: true)
             }
         } else {
             loadSelectedSection(bypassCache: true)
@@ -567,10 +647,16 @@ final class ClusterWorkspaceViewModel: ObservableObject {
             return isRefreshingOverview
         }
         if selectedSection == .issues {
-            return isLoading(section: .pods) || isLoading(section: .nodes) || isLoading(section: .workloads)
+            return Self.diagnosticResourceKinds.contains { loadingResourceKinds.contains($0) }
+        }
+        if selectedSection == .topology {
+            return isBuildingTopology || Self.topologySourceSections.contains(where: { isLoading(section: $0) })
+        }
+        if selectedSection == .portForward {
+            return loadingResourceKinds.contains(.services)
         }
         if selectedSection == .logs {
-            return selectedLogPodID != nil ? isLoadingLogs : isLoading(section: .pods)
+            return isLoadingLogs || isLoading(section: .pods)
         }
         return isLoading(section: selectedSection)
     }

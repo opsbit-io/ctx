@@ -121,23 +121,6 @@ public protocol KubernetesHelmReading: Sendable {
         name: String
     ) async -> Result<[HelmRevisionItem], Error>
 
-    func rollbackRelease(
-        context: KubernetesContextProfile,
-        namespace: String,
-        name: String,
-        revision: Int
-    ) async -> Result<String, Error>
-}
-
-public extension KubernetesHelmReading {
-    func rollbackRelease(
-        context: KubernetesContextProfile,
-        namespace: String,
-        name: String,
-        revision: Int
-    ) async -> Result<String, Error> {
-        .failure(HelmError.commandFailed("Rollback not supported"))
-    }
 }
 
 /// Reads real Helm releases.
@@ -459,39 +442,6 @@ public final class KubernetesHelmReader: KubernetesHelmReading {
             }
             let revisions = Self.parseHelmHistoryJSON(result.stdout)
             return .success(revisions)
-        } catch {
-            return .failure(error)
-        }
-    }
-
-    public func rollbackRelease(
-        context: KubernetesContextProfile,
-        namespace: String,
-        name: String,
-        revision: Int
-    ) async -> Result<String, Error> {
-        guard let helmPath = resolveBinary("helm") else {
-            return .failure(HelmError.helmNotFound("helm CLI is required on PATH to roll back releases."))
-        }
-        var arguments = ["rollback", name, String(revision), "--namespace", namespace, "--kube-context", context.contextName]
-        let kubeconfig = context.kubeconfigPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !kubeconfig.isEmpty {
-            arguments.append(contentsOf: ["--kubeconfig", kubeconfig])
-        }
-
-        let command = KubectlCommand(
-            executablePath: helmPath,
-            arguments: arguments,
-            environmentOverrides: kubeconfig.isEmpty ? [:] : ["KUBECONFIG": kubeconfig]
-        )
-
-        do {
-            let result = try await kubectl.run(command, timeout: timeout)
-            guard result.exitCode == 0 else {
-                let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                return .failure(HelmError.commandFailed(stderr.isEmpty ? "Failed to roll back Helm release" : stderr))
-            }
-            return .success(result.stdout)
         } catch {
             return .failure(error)
         }

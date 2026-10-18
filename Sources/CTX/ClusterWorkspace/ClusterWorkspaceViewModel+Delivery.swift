@@ -35,6 +35,12 @@ extension ClusterWorkspaceViewModel {
             if result.status == .reachable || gitOpsList == nil {
                 gitOpsList = Self.list(from: result, columns: Self.gitOpsColumns)
                 gitOpsLoadedAt = Date()
+                if let current = self.selectedGitOpsApp,
+                   let updated = result.items.first(where: { $0.id == current.id }) {
+                    self.selectedGitOpsApp = updated
+                } else if self.selectedGitOpsApp == nil {
+                    self.selectedGitOpsApp = result.items.first
+                }
             }
             gitOpsTask = nil
             CTXPerfLog.log(
@@ -135,13 +141,13 @@ extension ClusterWorkspaceViewModel {
     var gitOpsEmptyMessage: String {
         guard let result = gitOpsResult else { return "Loading GitOps applications." }
         if result.installedControllers.isEmpty {
-            return "Neither ArgoCD nor Flux CD is installed on this cluster. CTX looks for ArgoCD Applications and Flux Kustomizations and HelmReleases."
+            return "No GitOps or Progressive Delivery controllers detected. CTX checks for ArgoCD Applications, Flux Kustomizations/HelmReleases, and Flagger Canaries."
         }
-        let controllers = result.installedControllers.joined(separator: " and ")
+        let controllers = result.installedControllers.joined(separator: ", ")
         if selectedNamespace != .allNamespaces {
-            return "\(controllers) is installed, but reports no applications targeting '\(selectedNamespace.displayName)'."
+            return "\(controllers) installed — no applications targeting '\(selectedNamespace.displayName)'."
         }
-        return "\(controllers) is installed, but reports no applications anywhere on this cluster."
+        return "\(controllers) installed — no applications reported on this cluster."
     }
 
     // MARK: - Telemetry
@@ -407,27 +413,6 @@ extension ClusterWorkspaceViewModel {
         }
     }
 
-    func rollbackHelmRelease(_ release: HelmReleaseItem, toRevision revision: Int) async -> Bool {
-        isRollingBackHelm = true
-        helmDetailError = nil
-        defer { isRollingBackHelm = false }
-        let result = await helmReader.rollbackRelease(
-            context: context,
-            namespace: release.namespace,
-            name: release.name,
-            revision: revision
-        )
-        switch result {
-        case .success:
-            helmSuccessNotice = "Rolled back \(release.name) to revision #\(revision)"
-            loadHelm(bypassCache: true)
-            loadSelectedHelmDetail(force: true)
-            return true
-        case .failure(let error):
-            helmDetailError = "Rollback failed: \(error.localizedDescription)"
-            return false
-        }
-    }
 }
 
 extension ClusterWorkspaceViewModel {
@@ -439,5 +424,79 @@ extension ClusterWorkspaceViewModel {
     func focus(_ focus: ResourceFocus) {
         selectedSection = focus.section
         resourceFocus = focus
+    }
+
+    // MARK: - GitOps Operations (Sync, Refresh, Suspend/Resume)
+
+    func syncGitOpsApp(_ app: GitOpsApplicationItem, prune: Bool = true) {
+        performGitOpsAction(actionName: "Sync (\(app.name))") { [weak self] in
+            guard let self else { return KubernetesLifecycleActionResult(success: false, message: "Workspace deallocated") }
+            return await self.gitOpsManager.sync(app: app, context: self.context, prune: prune)
+        }
+    }
+
+    func refreshGitOpsApp(_ app: GitOpsApplicationItem, hard: Bool = false) {
+        let label = hard ? "Hard Refresh (\(app.name))" : "Refresh (\(app.name))"
+        performGitOpsAction(actionName: label) { [weak self] in
+            guard let self else { return KubernetesLifecycleActionResult(success: false, message: "Workspace deallocated") }
+            return await self.gitOpsManager.refresh(app: app, context: self.context, hard: hard)
+        }
+    }
+
+    func toggleSuspendGitOpsApp(_ app: GitOpsApplicationItem) {
+        let isCurrentlySuspended = app.syncStatus.lowercased() == "suspended"
+        let newSuspended = !isCurrentlySuspended
+        let label = (newSuspended ? "Suspend" : "Resume") + " (\(app.name))"
+        performGitOpsAction(actionName: label) { [weak self] in
+            guard let self else { return KubernetesLifecycleActionResult(success: false, message: "Workspace deallocated") }
+            return await self.gitOpsManager.suspend(app: app, context: self.context, suspended: newSuspended)
+        }
+    }
+
+    private func performGitOpsAction(actionName: String, action: @escaping () async -> KubernetesLifecycleActionResult) {
+        gitOpsActionDismissTask?.cancel()
+        isPerformingGitOpsAction = true
+        withAnimation(.easeOut(duration: 0.15)) {
+            gitOpsActionResult = nil
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await action()
+            let eventType: AuditEventType = result.success ? .gitOpsActionTriggered : .gitOpsActionFailed
+            try? self.auditLog.record(AuditEvent(
+                type: eventType,
+                contextName: self.context.contextName,
+                message: "\(actionName): \(result.message)\(result.errorDetails.map { " - \($0)" } ?? "")"
+            ))
+
+            await MainActor.run {
+                self.isPerformingGitOpsAction = false
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                    self.gitOpsActionResult = result
+                }
+                if result.success {
+                    // Refresh GitOps state after a short delay so controller has time to reflect status change
+                    Task { [weak self] in
+                        try? await Task.sleep(nanoseconds: 1_200_000_000)
+                        self?.loadGitOps(bypassCache: true)
+                    }
+                }
+                self.scheduleGitOpsResultDismiss(after: result.success ? 3.5 : 6.0)
+            }
+        }
+    }
+
+    private func scheduleGitOpsResultDismiss(after seconds: TimeInterval) {
+        gitOpsActionDismissTask?.cancel()
+        gitOpsActionDismissTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.25)) {
+                    self?.gitOpsActionResult = nil
+                }
+            }
+        }
     }
 }

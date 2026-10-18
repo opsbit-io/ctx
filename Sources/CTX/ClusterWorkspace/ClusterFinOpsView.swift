@@ -5,7 +5,6 @@ import CTXCore
 struct ClusterFinOpsView: View {
     @ObservedObject var viewModel: ClusterWorkspaceViewModel
     @State private var showingMethodologyModal = false
-    @State private var showingOpenCostInfo = false
     @State private var selectedRecommendation: FinOpsRecommendation?
     @State private var selectedRowDetail: FinOpsAllocationRow?
     @State private var copiedYAML = false
@@ -18,6 +17,9 @@ struct ClusterFinOpsView: View {
     @State private var finopsMinSpendFilter: Double = 0
     @State private var finopsEfficiencyFilter: String = "All"
     @State private var customColumnWidths: [SortColumn: CGFloat] = [:]
+    @State private var showingCustomDateRangePicker = false
+    @State private var tempStartDate: Date = Date()
+    @State private var tempEndDate: Date = Date()
 
     enum SortColumn: String, CaseIterable {
         case name = "Name"
@@ -53,41 +55,64 @@ struct ClusterFinOpsView: View {
                     return false
                 }
             }
-            if finopsEfficiencyFilter == "Low" && row.efficiencyScore >= 0.5 {
-                return false
-            } else if finopsEfficiencyFilter == "Optimal" && row.efficiencyScore < 0.8 {
-                return false
+            if finopsEfficiencyFilter == "Low" {
+                if !row.hasLiveUsage || row.efficiencyScore >= 0.5 { return false }
+            } else if finopsEfficiencyFilter == "Optimal" {
+                if !row.hasLiveUsage || row.efficiencyScore < 0.8 { return false }
             }
             return true
         }
 
         return base.sorted { a, b in
-            let result: Bool
+            let order: ComparisonResult
             switch sortColumn {
             case .name:
-                result = a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+                order = a.name.localizedCaseInsensitiveCompare(b.name)
             case .cpu:
-                result = a.breakdown.cpuCost < b.breakdown.cpuCost
+                order = hasCostPricing ? compare(a.breakdown.cpuCost, b.breakdown.cpuCost) : compare(a.cpuCoresRequested, b.cpuCoresRequested)
             case .memory:
-                result = a.breakdown.memoryCost < b.breakdown.memoryCost
+                order = hasCostPricing ? compare(a.breakdown.memoryCost, b.breakdown.memoryCost) : compare(a.memoryGiBRequested, b.memoryGiBRequested)
             case .storage:
-                result = a.breakdown.storageCost < b.breakdown.storageCost
+                order = hasCostPricing ? compare(a.breakdown.storageCost, b.breakdown.storageCost) : compare(a.storageGiB, b.storageGiB)
             case .idle:
-                result = a.breakdown.idleCost < b.breakdown.idleCost
+                order = hasCostPricing ? compare(a.breakdown.idleCost, b.breakdown.idleCost) : compare(a.cpuCoresUsed, b.cpuCoresUsed)
             case .totalSpend:
-                result = a.breakdown.totalCost < b.breakdown.totalCost
+                order = hasCostPricing ? compare(a.breakdown.totalCost, b.breakdown.totalCost) : compare(a.cpuCoresRequested, b.cpuCoresRequested)
             case .monthlyRun:
-                result = a.monthlyRunRateUSD < b.monthlyRunRateUSD
+                order = hasCostPricing ? compare(a.monthlyRunRateUSD, b.monthlyRunRateUSD) : compare(a.memoryGiBRequested, b.memoryGiBRequested)
             case .efficiency:
-                result = a.efficiencyScore < b.efficiencyScore
+                order = compare(a.efficiencyScore, b.efficiencyScore)
             }
-            return sortAscending ? result : !result
+            if order == .orderedSame {
+                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
+            return sortAscending ? order == .orderedAscending : order == .orderedDescending
         }
+    }
+
+    private func compare(_ lhs: Double, _ rhs: Double) -> ComparisonResult {
+        if lhs < rhs { return .orderedAscending }
+        if lhs > rhs { return .orderedDescending }
+        return .orderedSame
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             headerBar
+            if viewModel.isLoadingFinOpsProvider && viewModel.verifiedFinOpsReport == nil {
+                finopsProviderBanner(
+                    "Looking for OpenCost or Kubecost in the selected cluster…",
+                    systemImage: "magnifyingglass",
+                    tint: .blue
+                )
+            } else if !viewModel.finopsProviderMessage.isEmpty {
+                finopsProviderBanner(
+                    viewModel.finopsProviderMessage,
+                    systemImage: "info.circle",
+                    tint: .orange,
+                    action: viewModel.isFinOpsProviderDetected ? .retry : .setup
+                )
+            }
             kpiCardGrid
             analyticsCockpitSection
             if !report.recommendations.isEmpty {
@@ -108,165 +133,389 @@ struct ClusterFinOpsView: View {
         .onAppear {
             viewModel.loadFinOpsResources()
         }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled else { return }
+                if (viewModel.isFinOpsProviderDetected || viewModel.verifiedFinOpsReport != nil) && !viewModel.isLoadingFinOpsProvider {
+                    viewModel.loadFinOpsCosts(bypassCache: true)
+                }
+            }
+        }
         .sheet(item: $selectedRecommendation) { rec in
-            recommendationDetailSheet(rec)
+            ClusterFinOpsRecommendationSheet(
+                rec: rec,
+                formatCurrency: formatCurrency,
+                onDismiss: { selectedRecommendation = nil }
+            )
         }
         .sheet(item: $selectedRowDetail) { row in
-            rowDetailSheet(row)
+            ClusterFinOpsRowDetailSheet(
+                row: row,
+                report: report,
+                hasCostPricing: hasCostPricing,
+                formatCurrency: formatCurrency,
+                formatCores: formatCores,
+                formatGiB: formatGiB,
+                efficiencyColor: efficiencyColor,
+                iconForKind: iconForKind,
+                onDismiss: { selectedRowDetail = nil }
+            )
         }
         .sheet(isPresented: $showingMethodologyModal) {
-            methodologyAndSafetySheet
+            ClusterFinOpsMethodologySheet(viewModel: viewModel, isPresented: $showingMethodologyModal)
         }
-        .popover(isPresented: $showingOpenCostInfo, arrowEdge: .bottom) {
-            openCostPopover
+        .sheet(isPresented: $viewModel.isOpenCostSetupSheetPresented) {
+            OpenCostSetupApprovalSheet(viewModel: viewModel)
         }
     }
 
-    // MARK: - Header Bar
+    // MARK: - Header Bar (Unified, Seamless & Responsive)
 
     private var headerBar: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Row 1: Title + Verification Badge + Methodology CTA + Cloud Provider + Refresh
-            HStack(alignment: .center) {
-                HStack(spacing: 10) {
-                    Image(systemName: "dollarsign.circle.fill")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundStyle(Color.accentColor)
+        ViewThatFits(in: .horizontal) {
+            // Single unified line (Standard / Wide Window - Zero wasted space)
+            HStack(alignment: .center, spacing: 10) {
+                titleAndAuthenticityBadge
 
-                    Text("FinOps & Costs")
-                        .font(.system(size: 18, weight: .bold))
-
-                    dataAuthenticityBadge
-                }
-
-                Spacer(minLength: 16)
+                Spacer(minLength: 12)
 
                 HStack(spacing: 8) {
-                    // Methodology & Safety Button
-                    Button {
-                        showingMethodologyModal = true
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "shield.checkerboard")
-                                .font(.system(size: 11))
-                            Text("Methodology & Safety")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-
-                    cloudProfileMenu
+                    aggregationDimensionMenu
+                    timeWindowMenu
+                    cloudPricingBadge
+                    searchField
                 }
             }
 
-            // Row 2: Unified Pill Controls (Aggregation Dimension + Time Window + Search)
-            HStack(spacing: 12) {
-                // Aggregation Dimension Pills (Namespaces | Workloads | Nodes)
-                HStack(spacing: 4) {
-                    ForEach(FinOpsAggregation.allCases) { agg in
-                        let isSelected = viewModel.finopsAggregation == agg
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                viewModel.finopsAggregation = agg
-                            }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: iconForKind(agg.rawValue.capitalized))
-                                    .font(.system(size: 10))
-                                Text(agg.displayName)
-                                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                            }
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 4.5)
-                            .background(
-                                isSelected ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.05),
-                                in: Capsule()
-                            )
-                            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                            .overlay {
-                                if isSelected {
-                                    Capsule().stroke(Color.accentColor.opacity(0.4), lineWidth: 1)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
+            // Compact two-line layout (Narrow Window - Controls grouped tightly)
+            VStack(alignment: .leading, spacing: 10) {
+                titleAndAuthenticityBadge
+
+                HStack(spacing: 8) {
+                    aggregationDimensionMenu
+                    timeWindowMenu
+                    cloudPricingBadge
+                    Spacer()
+                    searchField
                 }
-
-                Divider()
-                    .frame(height: 16)
-
-                // Time Window Pills (24 Hours | 7 Days | 30 Days | Month to Date)
-                HStack(spacing: 4) {
-                    ForEach(FinOpsTimeWindow.allCases) { win in
-                        let isSelected = viewModel.finopsWindow == win
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                viewModel.finopsWindow = win
-                            }
-                        } label: {
-                            Text(win.shortName)
-                                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 4.5)
-                                .background(
-                                    isSelected ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.05),
-                                    in: Capsule()
-                                )
-                                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                                .overlay {
-                                    if isSelected {
-                                        Capsule().stroke(Color.accentColor.opacity(0.4), lineWidth: 1)
-                                    }
-                                }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                Spacer()
-
-                // Compact Search Field
-                CTXSearchField(placeholder: "Search allocation...", text: $viewModel.finopsSearchText)
-                    .frame(width: 200)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
-    private var cloudProfileMenu: some View {
+    private var titleAndAuthenticityBadge: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "dollarsign.circle.fill")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(Color.accentColor)
+
+            Text("FinOps & Costs")
+                .font(.system(size: 18, weight: .bold))
+
+            dataAuthenticityBadge
+        }
+    }
+
+    private var searchField: some View {
+        CTXSearchField(placeholder: "Search allocation...", text: $viewModel.finopsSearchText)
+            .frame(width: 175)
+    }
+
+    private var aggregationDimensionMenu: some View {
         Menu {
-            Button("AWS (m6i / gp3 standard)") {
-                viewModel.finopsPricing = .aws
-            }
-            Button("Google Cloud (n2 / pd-standard)") {
-                viewModel.finopsPricing = .gcp
-            }
-            Button("Microsoft Azure (Dsv5 / SSD)") {
-                viewModel.finopsPricing = .azure
+            ForEach(FinOpsAggregation.allCases) { agg in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        viewModel.finopsAggregation = agg
+                    }
+                } label: {
+                    HStack {
+                        Label(agg.displayName, systemImage: iconForKind(agg.rawValue.capitalized))
+                        if viewModel.finopsAggregation == agg {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
             }
         } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "cloud.fill")
-                    .font(.caption2)
-                Text(viewModel.finopsPricing.providerName)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
+            HStack(spacing: 6) {
+                Image(systemName: iconForKind(viewModel.finopsAggregation.rawValue.capitalized))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.accentColor)
+
+                Text(viewModel.finopsAggregation.displayName)
+                    .font(.system(size: 11.5, weight: .semibold))
+
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 0.75)
+            }
         }
+        .menuIndicator(.hidden)
         .buttonStyle(.plain)
-        .fixedSize()
+        .help("Group allocations by \(viewModel.finopsAggregation.displayName)")
+    }
+
+    private var timeWindowMenu: some View {
+        Menu {
+            Section {
+                Button {
+                    selectTimeWindow(.h24)
+                } label: {
+                    HStack {
+                        Label("Last 24 Hours", systemImage: "clock")
+                        if viewModel.finopsWindow == .h24 {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+
+                Button {
+                    selectTimeWindow(.d7)
+                } label: {
+                    HStack {
+                        Label("Last 7 Days (Week)", systemImage: "calendar")
+                        if viewModel.finopsWindow == .d7 {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+
+                Button {
+                    selectTimeWindow(.d30)
+                } label: {
+                    HStack {
+                        Label("Last 30 Days (Month)", systemImage: "calendar")
+                        if viewModel.finopsWindow == .d30 {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+
+                Button {
+                    selectTimeWindow(.monthToDate)
+                } label: {
+                    HStack {
+                        Label("Month to Date", systemImage: "calendar.badge.clock")
+                        if viewModel.finopsWindow == .monthToDate {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Button {
+                    tempStartDate = viewModel.finopsCustomStartDate
+                    tempEndDate = viewModel.finopsCustomEndDate
+                    showingCustomDateRangePicker = true
+                } label: {
+                    HStack {
+                        Label("Custom Date Range...", systemImage: "calendar.badge.plus")
+                        if viewModel.finopsWindow == .custom {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: viewModel.finopsWindow == .custom ? "calendar.badge.clock" : "calendar")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.accentColor)
+
+                Text(timeWindowDisplayLabel)
+                    .font(.system(size: 11.5, weight: .semibold))
+
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 0.75)
+            }
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .help("Select analysis time window or custom date range")
+        .popover(isPresented: $showingCustomDateRangePicker, arrowEdge: .bottom) {
+            customDateRangePopover
+        }
+    }
+
+    private func selectTimeWindow(_ window: FinOpsTimeWindow) {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            viewModel.finopsWindow = window
+            viewModel.cachedFinOpsReport = nil
+            viewModel.lastFinOpsCacheKey = ""
+        }
+    }
+
+    private var timeWindowDisplayLabel: String {
+        switch viewModel.finopsWindow {
+        case .h24: return "24 Hours"
+        case .d7: return "7 Days"
+        case .d30: return "30 Days"
+        case .monthToDate: return "Month to Date"
+        case .custom:
+            let formatter = DateFormatter()
+            formatter.dateFormat = "MMM d"
+            let startStr = formatter.string(from: viewModel.finopsCustomStartDate)
+            let endStr = formatter.string(from: viewModel.finopsCustomEndDate)
+            return "\(startStr) – \(endStr)"
+        }
+    }
+
+    private var windowShortLabel: String {
+        switch viewModel.finopsWindow {
+        case .h24: return "24H"
+        case .d7: return "7D"
+        case .d30: return "30D"
+        case .monthToDate: return "MTD"
+        case .custom:
+            let days = max(1, Calendar.current.dateComponents([.day], from: viewModel.finopsCustomStartDate, to: viewModel.finopsCustomEndDate).day ?? 1)
+            return "\(days)D"
+        }
+    }
+
+    // MARK: - Custom Date Range Popover (Compact, Clean & Professional)
+
+    private var customDateRangePopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Header
+            HStack(spacing: 6) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.accentColor)
+
+                Text("Custom Date Range")
+                    .font(.system(size: 11.5, weight: .bold))
+
+                Spacer()
+
+                let diffDays = max(1, Calendar.current.dateComponents([.day], from: tempStartDate, to: tempEndDate).day ?? 1)
+                Text("\(diffDays)d")
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.14), in: Capsule())
+                    .foregroundStyle(Color.accentColor)
+            }
+
+            Divider().opacity(0.4)
+
+            // Date Pickers (Compact & Clean)
+            VStack(spacing: 8) {
+                HStack {
+                    Text("From:")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 38, alignment: .leading)
+
+                    DatePicker("", selection: $tempStartDate, in: ...tempEndDate, displayedComponents: [.date])
+                        .datePickerStyle(.compact)
+                        .labelsHidden()
+
+                    Spacer()
+                }
+
+                HStack {
+                    Text("To:")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 38, alignment: .leading)
+
+                    DatePicker("", selection: $tempEndDate, in: tempStartDate...Date(), displayedComponents: [.date])
+                        .datePickerStyle(.compact)
+                        .labelsHidden()
+
+                    Spacer()
+                }
+            }
+            .padding(8)
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+            // Actions
+            HStack(spacing: 8) {
+                Spacer()
+
+                Button("Cancel") {
+                    showingCustomDateRangePicker = false
+                }
+                .keyboardShortcut(.cancelAction)
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+                Button {
+                    viewModel.setCustomFinOpsDateRange(start: tempStartDate, end: tempEndDate)
+                    showingCustomDateRangePicker = false
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .bold))
+                        Text("Apply")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(10)
+        .frame(width: 230)
+    }
+
+    private var finopsCloudProvider: CloudProvider {
+        switch viewModel.context.providerType {
+        case .eks: .aws
+        case .gke: .gcp
+        case .aks: .azure
+        case .local, .unknown: .kubernetes
+        }
+    }
+
+    private var cloudPricingBadge: some View {
+        HStack(spacing: 6) {
+            ProviderIcon(provider: finopsCloudProvider, size: 13, fallbackTint: Color.accentColor)
+            Text(report.dataSource.isLiveAgent ? report.dataSource.badgeTitle : (viewModel.finopsPricing.hasExplicitRates ? "Custom Rates" : "Pure Kubernetes"))
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 0.75)
+        }
+        .help(report.dataSource.isLiveAgent
+            ? "Allocation values were reported by the detected in-cluster cost provider."
+            : (viewModel.finopsPricing.hasExplicitRates
+                ? "Estimated allocation using explicitly supplied rates. This is not cloud billing data."
+                : "No verified pricing source is connected. CTX will not invent currency values."))
     }
 
     private var dataAuthenticityBadge: some View {
+
         Button {
             showingMethodologyModal = true
         } label: {
@@ -274,7 +523,7 @@ struct ClusterFinOpsView: View {
                 Circle()
                     .fill(report.hasLivePodTelemetry ? Color.green : Color.orange)
                     .frame(width: 6, height: 6)
-                Text(report.hasLivePodTelemetry ? "Live Metrics Verified" : "Baseline Requests")
+                Text(report.dataSource.isLiveAgent ? "Verified Cost Provider" : (report.hasLivePodTelemetry ? "Live Usage Snapshot" : "Requests Snapshot"))
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.primary)
                 Image(systemName: "info.circle")
@@ -289,7 +538,9 @@ struct ClusterFinOpsView: View {
             }
         }
         .buttonStyle(.plain)
-        .help(report.hasLivePodTelemetry ? "Real pod usage is tracked from live cluster metrics." : "Costs are calculated from declared resource requests. Click to view methodology.")
+        .help(report.dataSource.isLiveAgent
+            ? "Costs and history came from OpenCost or Kubecost through the Kubernetes service proxy."
+            : (report.hasLivePodTelemetry ? "Usage came from the current metrics snapshot." : "Allocation inputs came from declared Kubernetes requests; no usage history is implied."))
     }
 
     // MARK: - Hero KPI Cards
@@ -309,34 +560,65 @@ struct ClusterFinOpsView: View {
 
     private var kpiCardGrid: some View {
         LazyVGrid(columns: kpiColumns, spacing: 12) {
-            finopsKpiCard(
-                title: "MONTHLY RUN RATE",
-                value: formatCurrency(report.summary.monthlyRunRateUSD),
-                subtitle: "Est. annualized \(formatCurrency(report.summary.monthlyRunRateUSD * 12))",
-                icon: "chart.line.uptrend.xyaxis",
-                tint: .blue
-            )
-            finopsKpiCard(
-                title: "WINDOW SPEND (\(viewModel.finopsWindow.rawValue.uppercased()))",
-                value: formatCurrency(report.summary.windowSpendUSD),
-                subtitle: "Compute, memory, storage & idle",
-                icon: "creditcard.fill",
-                tint: .indigo
-            )
-            finopsKpiCard(
-                title: "RESOURCE EFFICIENCY",
-                value: "\(Int(round(report.summary.overallEfficiencyScore * 100)))%",
-                subtitle: efficiencySubtitle(report.summary.overallEfficiencyScore),
-                icon: "gauge.with.needle.fill",
-                tint: efficiencyColor(report.summary.overallEfficiencyScore)
-            )
-            finopsKpiCard(
-                title: "POTENTIAL SAVINGS",
-                value: formatCurrency(report.summary.potentialMonthlySavingsUSD) + " / mo",
-                subtitle: "\(report.recommendations.count) safe optimizations identified",
-                icon: "sparkles",
-                tint: .green
-            )
+            if hasCostPricing {
+                finopsKpiCard(
+                    title: "ESTIMATED MONTHLY RUN RATE",
+                    value: formatCurrency(report.summary.monthlyRunRateUSD),
+                    subtitle: "Est. annualized \(formatCurrency(report.summary.monthlyRunRateUSD * 12))",
+                    icon: "chart.line.uptrend.xyaxis",
+                    tint: .blue
+                )
+                finopsKpiCard(
+                    title: "MODELED WINDOW COST (\(windowShortLabel))",
+                    value: formatCurrency(report.summary.windowSpendUSD),
+                    subtitle: "Compute, memory, storage & idle",
+                    icon: "creditcard.fill",
+                    tint: .indigo
+                )
+                finopsKpiCard(
+                    title: "RESOURCE EFFICIENCY",
+                    value: hasComparableEfficiency ? "\(Int(round(report.summary.overallEfficiencyScore * 100)))%" : "Unavailable",
+                    subtitle: hasComparableEfficiency ? efficiencySubtitle(report.summary.overallEfficiencyScore) : "No comparable cost-weighted usage sample",
+                    icon: "gauge.with.needle.fill",
+                    tint: hasComparableEfficiency ? efficiencyColor(report.summary.overallEfficiencyScore) : .secondary
+                )
+                finopsKpiCard(
+                    title: "ESTIMATED POTENTIAL SAVINGS",
+                    value: formatCurrency(report.summary.potentialMonthlySavingsUSD) + " / mo",
+                    subtitle: "\(report.recommendations.count) advisory candidates from current metrics",
+                    icon: "sparkles",
+                    tint: .green
+                )
+            } else {
+                finopsKpiCard(
+                    title: "ALLOCATED CPU CORES",
+                    value: formatCores(report.summary.totalCoresAllocated),
+                    subtitle: report.summary.totalCoresUsed > 0 ? "Active: \(formatCores(report.summary.totalCoresUsed)) used (\(Int(round((report.summary.totalCoresUsed / max(0.001, report.summary.totalCoresAllocated)) * 100)))%)" : "Total pod requested cores",
+                    icon: "cpu",
+                    tint: .blue
+                )
+                finopsKpiCard(
+                    title: "ALLOCATED MEMORY",
+                    value: formatGiB(report.summary.totalMemoryGiBAllocated),
+                    subtitle: report.summary.totalMemoryGiBUsed > 0 ? "Active: \(formatGiB(report.summary.totalMemoryGiBUsed)) used (\(Int(round((report.summary.totalMemoryGiBUsed / max(0.001, report.summary.totalMemoryGiBAllocated)) * 100)))%)" : "Total pod requested RAM",
+                    icon: "memorychip",
+                    tint: .purple
+                )
+                finopsKpiCard(
+                    title: "CLUSTER EFFICIENCY",
+                    value: report.summary.overallEfficiencyScore > 0 ? "\(Int(round(report.summary.overallEfficiencyScore * 100)))%" : (hasComparableEfficiency ? "0%" : "Telemetry Pending"),
+                    subtitle: report.summary.overallEfficiencyScore > 0 ? efficiencySubtitle(report.summary.overallEfficiencyScore) : "Ratio of active usage to requests",
+                    icon: "gauge.with.needle.fill",
+                    tint: report.summary.overallEfficiencyScore > 0 ? efficiencyColor(report.summary.overallEfficiencyScore) : .secondary
+                )
+                finopsKpiCard(
+                    title: "BOUND STORAGE (PVC)",
+                    value: formatGiB(report.summary.totalStorageGiBAllocated),
+                    subtitle: "\(report.rows.filter { $0.storageGiB > 0 }.count) namespaces with PVC claims",
+                    icon: "internaldrive",
+                    tint: .orange
+                )
+            }
         }
     }
 
@@ -377,7 +659,13 @@ struct ClusterFinOpsView: View {
 
     @ViewBuilder
     private var analyticsCockpitSection: some View {
-        if availableWidth < 920 {
+        if availableWidth < 620 {
+            VStack(spacing: 14) {
+                spendOverTimeCard
+                costBreakdownCard
+                resourceUtilizationCard
+            }
+        } else if availableWidth < 920 {
             VStack(spacing: 14) {
                 spendOverTimeCard
                 HStack(alignment: .top, spacing: 14) {
@@ -413,8 +701,30 @@ struct ClusterFinOpsView: View {
                 }
 
                 if report.timeSeries.isEmpty {
-                    CTXEmptyStateView(title: "No Data", message: "No historical data points available.")
-                        .frame(height: 190)
+                    VStack(spacing: 8) {
+                        Image(systemName: "chart.bar.xaxis")
+                            .font(.system(size: 26))
+                            .foregroundStyle(.secondary)
+                        Text(hasCostPricing ? "No Historical Data in Window" : "OpenCost Provider Not Installed")
+                            .font(.subheadline.weight(.semibold))
+                        Text(hasCostPricing ? "No historical records were returned for this time range." : "Connect OpenCost to track daily cloud spending, historical cost burn, and trend analysis.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 320)
+                        if !hasCostPricing {
+                            Button {
+                                viewModel.openOpenCostSetupWorkflow()
+                            } label: {
+                                Label("Set up OpenCost…", systemImage: "plus.circle.fill")
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .padding(.top, 4)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     Chart(report.timeSeries) { pt in
                         BarMark(
@@ -454,42 +764,94 @@ struct ClusterFinOpsView: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .frame(height: 250)
     }
 
     private var costBreakdownCard: some View {
         CTXGlassPanel(padding: 14) {
             VStack(alignment: .leading, spacing: 10) {
-                Label("Cost Breakdown", systemImage: "chart.pie.fill")
+                Label(hasCostPricing ? "Cost Breakdown" : "Resource Allocation Split", systemImage: "chart.pie.fill")
                     .font(.headline)
 
-                let total = max(0.01, report.summary.windowSpendUSD)
-                let cpuShare = report.summary.totalComputeCostUSD > 0 ? report.summary.totalComputeCostUSD : report.rows.reduce(0.0) { $0 + $1.breakdown.cpuCost }
-                let memShare = report.summary.totalMemoryCostUSD > 0 ? report.summary.totalMemoryCostUSD : report.rows.reduce(0.0) { $0 + $1.breakdown.memoryCost }
-                let storageShare = report.summary.totalStorageCostUSD > 0 ? report.summary.totalStorageCostUSD : report.rows.reduce(0.0) { $0 + $1.breakdown.storageCost }
-                let idleShare = report.summary.totalIdleCostUSD > 0 ? report.summary.totalIdleCostUSD : report.rows.reduce(0.0) { $0 + $1.breakdown.idleCost }
+                if hasCostPricing {
+                    let total = max(0.01, report.summary.windowSpendUSD)
+                    let cpuShare = report.summary.totalComputeCostUSD > 0 ? report.summary.totalComputeCostUSD : report.rows.reduce(0.0) { $0 + $1.breakdown.cpuCost }
+                    let memShare = report.summary.totalMemoryCostUSD > 0 ? report.summary.totalMemoryCostUSD : report.rows.reduce(0.0) { $0 + $1.breakdown.memoryCost }
+                    let storageShare = report.summary.totalStorageCostUSD > 0 ? report.summary.totalStorageCostUSD : report.rows.reduce(0.0) { $0 + $1.breakdown.storageCost }
+                    let idleShare = report.summary.totalIdleCostUSD > 0 ? report.summary.totalIdleCostUSD : report.rows.reduce(0.0) { $0 + $1.breakdown.idleCost }
 
-                VStack(spacing: 8) {
-                    costShareRow(title: "Compute (CPU)", amount: cpuShare, total: total, color: .blue)
-                    costShareRow(title: "Memory (RAM)", amount: memShare, total: total, color: .purple)
-                    costShareRow(title: "Storage (PVC)", amount: storageShare, total: total, color: .orange)
-                    costShareRow(title: "Cluster Idle Share", amount: idleShare, total: total, color: .gray)
-                }
-                .padding(.top, 4)
+                    VStack(spacing: 8) {
+                        costShareRow(title: "Compute (CPU)", amount: cpuShare, total: total, color: .blue)
+                        costShareRow(title: "Memory (RAM)", amount: memShare, total: total, color: .purple)
+                        costShareRow(title: "Storage (PVC)", amount: storageShare, total: total, color: .orange)
+                        costShareRow(title: "Cluster Idle Share", amount: idleShare, total: total, color: .gray)
+                    }
+                    .padding(.top, 4)
 
-                Spacer(minLength: 8)
+                    Spacer(minLength: 8)
 
-                Divider()
+                    Divider()
 
-                HStack {
-                    Text("Total Window Allocation")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(formatCurrency(report.summary.windowSpendUSD))
-                        .font(.caption.weight(.bold).monospaced())
+                    HStack {
+                        Text("Total Window Allocation")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(formatCurrency(report.summary.windowSpendUSD))
+                            .font(.caption.weight(.bold).monospaced())
+                    }
+                } else {
+                    let totalReqCores = max(0.001, report.summary.totalCoresAllocated)
+                    let totalReqMem = max(0.001, report.summary.totalMemoryGiBAllocated)
+                    let totalStorage = report.summary.totalStorageGiBAllocated
+
+                    VStack(spacing: 10) {
+                        resourceShareRow(title: "CPU Requests", value: formatCores(totalReqCores), subtitle: "\(report.rows.count) workloads", color: .blue)
+                        resourceShareRow(title: "Memory Requests", value: formatGiB(totalReqMem), subtitle: "\(report.rows.count) workloads", color: .purple)
+                        resourceShareRow(title: "Bound Storage (PVC)", value: formatGiB(totalStorage), subtitle: "\(report.rows.filter { $0.storageGiB > 0 }.count) claims", color: .orange)
+                        if report.summary.totalCoresUsed > 0 || report.summary.totalMemoryGiBUsed > 0 {
+                            resourceShareRow(title: "Active CPU Telemetry", value: formatCores(report.summary.totalCoresUsed), subtitle: "\(Int(round((report.summary.totalCoresUsed / totalReqCores) * 100)))% of requests", color: .green)
+                        }
+                    }
+                    .padding(.top, 4)
+
+                    Spacer(minLength: 8)
+
+                    Divider()
+
+                    HStack {
+                        Text("Resource Tracking Mode")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("Authentic Declared")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(Color.accentColor)
+                    }
                 }
             }
-            .frame(minHeight: 190)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .frame(height: 250)
+    }
+
+    private func resourceShareRow(title: String, value: String, subtitle: String, color: Color) -> some View {
+        HStack {
+            HStack(spacing: 6) {
+                Circle().fill(color).frame(width: 7, height: 7)
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(value)
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -544,10 +906,10 @@ struct ClusterFinOpsView: View {
                         color: .purple
                     )
 
-                    // Top Cost Drivers Mini-List
+                    // Top Cost / Resource Drivers Mini-List
                     if !report.rows.isEmpty {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("Top Cost Drivers")
+                            Text(hasCostPricing ? "Top Cost Drivers" : "Top Allocated \(viewModel.finopsAggregation.displayName)")
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(.secondary)
 
@@ -557,9 +919,15 @@ struct ClusterFinOpsView: View {
                                         .font(.system(size: 10, weight: .medium))
                                         .lineLimit(1)
                                     Spacer()
-                                    Text(formatCurrency(row.breakdown.totalCost))
-                                        .font(.system(size: 10, weight: .semibold).monospaced())
-                                        .foregroundStyle(.secondary)
+                                    if hasCostPricing {
+                                        Text(formatCurrency(row.breakdown.totalCost))
+                                            .font(.system(size: 10, weight: .semibold).monospaced())
+                                            .foregroundStyle(.secondary)
+                                    } else {
+                                        Text("\(formatCores(row.cpuCoresRequested)) · \(formatGiB(row.memoryGiBRequested))")
+                                            .font(.system(size: 9, weight: .semibold).monospaced())
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                         }
@@ -569,8 +937,9 @@ struct ClusterFinOpsView: View {
                 }
                 .padding(.top, 2)
             }
-            .frame(minHeight: 190)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        .frame(height: 250)
     }
 
     private func utilizationGaugeRow(title: String, allocatedLabel: String, usedLabel: String, percentage: Double, color: Color) -> some View {
@@ -891,26 +1260,31 @@ struct ClusterFinOpsView: View {
         let kinds = Set(report.rows.compactMap(\.resourceKind)).sorted()
 
         return Menu {
-            Menu("Resource Kind") {
-                Button("All Kinds") { finopsKindFilter = "All" }
-                Divider()
-                ForEach(kinds, id: \.self) { k in
-                    Button(k) { finopsKindFilter = k }
+            if kinds.count > 1 {
+                Menu("Resource Kind") {
+                    Picker("Resource Kind", selection: $finopsKindFilter) {
+                        Text("All Kinds").tag("All")
+                        ForEach(kinds, id: \.self) { kind in
+                            Text(kind).tag(kind)
+                        }
+                    }
                 }
             }
             Menu("Minimum Spend") {
-                Button("Any Spend") { finopsMinSpendFilter = 0 }
-                Divider()
-                Button("> ") { finopsMinSpendFilter = 10 }
-                Button("> ") { finopsMinSpendFilter = 50 }
-                Button("> ") { finopsMinSpendFilter = 100 }
-                Button("> ") { finopsMinSpendFilter = 500 }
+                Picker("Minimum Spend", selection: $finopsMinSpendFilter) {
+                    Text("Any Spend").tag(0.0)
+                    Text("At least $1").tag(1.0)
+                    Text("At least $10").tag(10.0)
+                    Text("At least $50").tag(50.0)
+                    Text("At least $100").tag(100.0)
+                }
             }
             Menu("Efficiency Score") {
-                Button("All Scores") { finopsEfficiencyFilter = "All" }
-                Divider()
-                Button("Low (< 50%)") { finopsEfficiencyFilter = "Low" }
-                Button("Optimal (> 80%)") { finopsEfficiencyFilter = "Optimal" }
+                Picker("Efficiency Score", selection: $finopsEfficiencyFilter) {
+                    Text("All Scores").tag("All")
+                    Text("Low (< 50%)").tag("Low")
+                    Text("Optimal (≥ 80%)").tag("Optimal")
+                }
             }
         } label: {
             HStack(spacing: 4) {
@@ -930,12 +1304,12 @@ struct ClusterFinOpsView: View {
     private var tableHeader: some View {
         HStack(spacing: 8) {
             headerCell(title: "NAME", column: .name, alignment: .leading)
-            headerCell(title: "CPU", column: .cpu, alignment: .trailing)
-            headerCell(title: "MEMORY", column: .memory, alignment: .trailing)
+            headerCell(title: hasCostPricing ? "CPU" : "CPU REQ", column: .cpu, alignment: .trailing)
+            headerCell(title: hasCostPricing ? "MEMORY" : "MEM REQ", column: .memory, alignment: .trailing)
             headerCell(title: "STORAGE", column: .storage, alignment: .trailing)
-            headerCell(title: "IDLE SHARE", column: .idle, alignment: .trailing)
-            headerCell(title: "TOTAL SPEND", column: .totalSpend, alignment: .trailing)
-            headerCell(title: "MONTHLY RUN", column: .monthlyRun, alignment: .trailing)
+            headerCell(title: hasCostPricing ? "IDLE SHARE" : "CPU USED", column: .idle, alignment: .trailing)
+            headerCell(title: hasCostPricing ? "TOTAL SPEND" : "MEM USED", column: .totalSpend, alignment: .trailing)
+            headerCell(title: hasCostPricing ? "MONTHLY RUN" : "STATUS", column: .monthlyRun, alignment: .trailing)
             headerCell(title: "EFFICIENCY", column: .efficiency, alignment: .trailing)
         }
         .font(.caption2.weight(.bold))
@@ -1023,44 +1397,92 @@ struct ClusterFinOpsView: View {
                 }
                 .frame(width: computedColumnWidth(for: .name), alignment: .leading)
 
-                Text(formatCurrency(row.breakdown.cpuCost))
-                    .font(.caption.monospacedDigit())
-                    .frame(width: computedColumnWidth(for: .cpu), alignment: .trailing)
+                if hasCostPricing {
+                    Text(formatCurrency(row.breakdown.cpuCost))
+                        .font(.caption.monospacedDigit())
+                        .frame(width: computedColumnWidth(for: .cpu), alignment: .trailing)
 
-                Text(formatCurrency(row.breakdown.memoryCost))
-                    .font(.caption.monospacedDigit())
-                    .frame(width: computedColumnWidth(for: .memory), alignment: .trailing)
+                    Text(formatCurrency(row.breakdown.memoryCost))
+                        .font(.caption.monospacedDigit())
+                        .frame(width: computedColumnWidth(for: .memory), alignment: .trailing)
 
-                Text(formatCurrency(row.breakdown.storageCost))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(row.breakdown.storageCost > 0 ? .primary : .secondary)
-                    .frame(width: computedColumnWidth(for: .storage), alignment: .trailing)
+                    Text(formatCurrency(row.breakdown.storageCost))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(row.breakdown.storageCost > 0 ? .primary : .secondary)
+                        .frame(width: computedColumnWidth(for: .storage), alignment: .trailing)
 
-                Text(formatCurrency(row.breakdown.idleCost))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: computedColumnWidth(for: .idle), alignment: .trailing)
+                    Text(formatCurrency(row.breakdown.idleCost))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: computedColumnWidth(for: .idle), alignment: .trailing)
 
-                Text(formatCurrency(row.breakdown.totalCost))
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.primary)
-                    .frame(width: computedColumnWidth(for: .totalSpend), alignment: .trailing)
+                    Text(formatCurrency(row.breakdown.totalCost))
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                        .frame(width: computedColumnWidth(for: .totalSpend), alignment: .trailing)
 
-                Text(formatCurrency(row.monthlyRunRateUSD))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    Text(formatCurrency(row.monthlyRunRateUSD))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: computedColumnWidth(for: .monthlyRun), alignment: .trailing)
+                } else {
+                    Text(formatCores(row.cpuCoresRequested))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(row.cpuCoresRequested > 0 ? .primary : .secondary)
+                        .frame(width: computedColumnWidth(for: .cpu), alignment: .trailing)
+
+                    Text(formatGiB(row.memoryGiBRequested))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(row.memoryGiBRequested > 0 ? .primary : .secondary)
+                        .frame(width: computedColumnWidth(for: .memory), alignment: .trailing)
+
+                    Text(row.storageGiB > 0 ? formatGiB(row.storageGiB) : "-")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(row.storageGiB > 0 ? .primary : .secondary)
+                        .frame(width: computedColumnWidth(for: .storage), alignment: .trailing)
+
+                    Text(row.hasLiveUsage && row.cpuCoresUsed > 0 ? formatCores(row.cpuCoresUsed) : "-")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(row.cpuCoresUsed > 0 ? .primary : .secondary)
+                        .frame(width: computedColumnWidth(for: .idle), alignment: .trailing)
+
+                    Text(row.hasLiveUsage && row.memoryGiBUsed > 0 ? formatGiB(row.memoryGiBUsed) : "-")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(row.memoryGiBUsed > 0 ? .primary : .secondary)
+                        .frame(width: computedColumnWidth(for: .totalSpend), alignment: .trailing)
+
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(row.hasLiveUsage ? Color.green : Color.secondary.opacity(0.5))
+                            .frame(width: 6, height: 6)
+                        Text(row.hasLiveUsage ? "Live" : "Declared")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(row.hasLiveUsage ? .primary : .secondary)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(row.hasLiveUsage ? Color.green.opacity(0.1) : Color.secondary.opacity(0.08), in: Capsule())
                     .frame(width: computedColumnWidth(for: .monthlyRun), alignment: .trailing)
+                }
 
-                HStack(spacing: 6) {
-                    ProgressView(value: row.efficiencyScore)
-                        .tint(efficiencyColor(row.efficiencyScore))
-                        .scaleEffect(x: 1, y: 0.5, anchor: .center)
+                Group {
+                    if row.hasLiveUsage {
+                        HStack(spacing: 6) {
+                            ProgressView(value: row.efficiencyScore)
+                                .tint(efficiencyColor(row.efficiencyScore))
+                                .scaleEffect(x: 1, y: 0.5, anchor: .center)
 
-                    Text("\(Int(round(row.efficiencyScore * 100)))%")
-                        .font(.system(size: 11, weight: .bold).monospacedDigit())
-                        .foregroundStyle(efficiencyColor(row.efficiencyScore))
-                        .frame(width: 34, alignment: .trailing)
+                            Text("\(Int(round(row.efficiencyScore * 100)))%")
+                                .font(.system(size: 11, weight: .bold).monospacedDigit())
+                                .foregroundStyle(efficiencyColor(row.efficiencyScore))
+                                .frame(width: 34, alignment: .trailing)
+                        }
+                    } else {
+                        Text("Unavailable")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .frame(width: computedColumnWidth(for: .efficiency), alignment: .trailing)
             }
@@ -1074,427 +1496,90 @@ struct ClusterFinOpsView: View {
     }
 
 
-    // MARK: - Row Detail Sheet
-
-    private func rowDetailSheet(_ row: FinOpsAllocationRow) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                HStack(spacing: 8) {
-                    Image(systemName: iconForKind(row.resourceKind))
-                        .font(.title2)
-                        .foregroundStyle(Color.accentColor)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.name)
-                            .font(.title3.weight(.bold))
-                        if let ns = row.namespace {
-                            Text("Namespace / Scope: \(ns)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                Spacer()
-                Button("Done") {
-                    selectedRowDetail = nil
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-
-            Divider()
-
-            HStack(spacing: 16) {
-                detailStatBox(title: "TOTAL WINDOW SPEND", value: formatCurrency(row.breakdown.totalCost), tint: .primary)
-                detailStatBox(title: "MONTHLY RUN RATE", value: formatCurrency(row.monthlyRunRateUSD), tint: .blue)
-                detailStatBox(title: "EFFICIENCY SCORE", value: "\(Int(round(row.efficiencyScore * 100)))%", tint: efficiencyColor(row.efficiencyScore))
-                detailStatBox(title: "ESTIMATED WASTE", value: formatCurrency(row.estimatedWasteUSD), tint: .orange)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Component Cost Breakdown")
-                    .font(.headline)
-
-                VStack(spacing: 6) {
-                    detailBreakdownRow(name: "Compute (CPU)", cost: row.breakdown.cpuCost, total: row.breakdown.totalCost, color: .blue)
-                    detailBreakdownRow(name: "Memory (RAM)", cost: row.breakdown.memoryCost, total: row.breakdown.totalCost, color: .purple)
-                    detailBreakdownRow(name: "Storage (PVC)", cost: row.breakdown.storageCost, total: row.breakdown.totalCost, color: .orange)
-                    detailBreakdownRow(name: "Attributed Idle Reserve", cost: row.breakdown.idleCost, total: row.breakdown.totalCost, color: .gray)
-                }
-                .padding(12)
-                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-            }
-
-            // Matching recommendation if any
-            let relatedRecs = report.recommendations.filter {
-                $0.targetResource == row.name || ($0.namespace != nil && $0.namespace == row.name)
-            }
-            if !relatedRecs.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Related Optimization Opportunities")
-                        .font(.headline)
-
-                    ForEach(relatedRecs) { rec in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(rec.title).font(.subheadline.weight(.semibold))
-                                Text(rec.subtitle).font(.caption2).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text("Save \(formatCurrency(rec.monthlySavingsUSD))/mo")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.green)
-                        }
-                        .padding(10)
-                        .background(Color.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-                    }
-                }
-            }
-
-            Spacer()
-        }
-        .padding(22)
-        .frame(width: 580, height: 460)
-    }
-
-    private func detailStatBox(title: String, value: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 16, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(tint)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func detailBreakdownRow(name: String, cost: Double, total: Double, color: Color) -> some View {
-        let pct = total > 0 ? Int(round((cost / total) * 100)) : 0
-        return HStack {
-            Circle().fill(color).frame(width: 8, height: 8)
-            Text(name).font(.caption)
-            Spacer()
-            Text("\(formatCurrency(cost)) (\(pct)%)")
-                .font(.caption.monospacedDigit())
-        }
-    }
-
-    // MARK: - Recommendation Detail Sheet (Safe Verification & Patch Review)
-
-    private func recommendationDetailSheet(_ rec: FinOpsRecommendation) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text(rec.title)
-                            .font(.title3.weight(.bold))
-
-                        Text(rec.riskLevel)
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.green)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.12), in: Capsule())
-                    }
-                    Text(rec.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Done") {
-                    selectedRecommendation = nil
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-
-            Divider()
-
-            // Financial Summary Strip
-            HStack(spacing: 20) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("CURRENT REQUEST")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.secondary)
-                    Text(rec.currentAllocation)
-                        .font(.callout.weight(.medium))
-                }
-
-                Divider().frame(height: 35)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("RECOMMENDED TARGET")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.secondary)
-                    Text(rec.suggestedAllocation)
-                        .font(.callout.weight(.bold))
-                        .foregroundStyle(.green)
-                }
-
-                Divider().frame(height: 35)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("ESTIMATED MONTHLY SAVINGS")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.secondary)
-                    Text("\(formatCurrency(rec.monthlySavingsUSD)) / month")
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
-                        .foregroundStyle(.green)
-                }
-            }
-            .padding(12)
-            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-
-            // Safety Guardrail Callout
-            HStack(spacing: 10) {
-                Image(systemName: "shield.lefthalf.filled")
-                    .font(.title3)
-                    .foregroundStyle(.green)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Safety Guardrails Applied")
-                        .font(.system(size: 11, weight: .bold))
-                    Text("\(rec.safetyHeadroom) Â· Request is adjusted to fit actual consumption while container limits remain intact to eliminate CPU throttling and OOMKills.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(10)
-            .background(Color.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-
-            // Step 1: Verification Command
-            if let verifyCmd = rec.verificationCommand {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("1. Verify Live Pod Consumption in Terminal")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.secondary)
-
-                    HStack {
-                        Text(verifyCmd)
-                            .font(.system(size: 11, design: .monospaced))
-                            .lineLimit(1)
-                        Spacer()
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(verifyCmd, forType: .string)
-                            copiedVerifyCommand = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                copiedVerifyCommand = false
-                            }
-                        } label: {
-                            Label(copiedVerifyCommand ? "Copied!" : "Copy", systemImage: copiedVerifyCommand ? "checkmark" : "doc.on.doc")
-                                .font(.caption2)
-                        }
-                    }
-                    .padding(8)
-                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-                }
-            }
-
-            // Step 2: YAML Patch Snippet
-            if let yaml = rec.yamlPatchSnippet {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("2. Suggested Resource Patch (YAML)")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(yaml, forType: .string)
-                            copiedYAML = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                copiedYAML = false
-                            }
-                        } label: {
-                            Label(copiedYAML ? "Copied!" : "Copy YAML", systemImage: copiedYAML ? "checkmark" : "doc.on.doc")
-                                .font(.caption2)
-                        }
-                    }
-
-                    Text(yaml)
-                        .font(.system(size: 11, design: .monospaced))
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(nsColor: .textBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .textSelection(.enabled)
-                }
-            }
-
-            Spacer()
-        }
-        .padding(20)
-        .frame(width: 600, height: 500)
-    }
-
-    // MARK: - Methodology & Safety Sheet
-
-    private var methodologyAndSafetySheet: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                HStack(spacing: 8) {
-                    Image(systemName: "shield.checkerboard")
-                        .font(.title2)
-                        .foregroundStyle(Color.accentColor)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("FinOps Methodology & Safety Guardrails")
-                            .font(.title3.weight(.bold))
-                        Text("How costs are calculated, why right-sizing works, and how workloads are safeguarded")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                Button("Done") {
-                    showingMethodologyModal = false
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Question 1: How is the price determined?
-                    methodologySection(
-                        icon: "dollarsign.circle.fill",
-                        color: .blue,
-                        title: "1. How Pricing is Calculated",
-                        description: "Kubernetes nodes are billed by your cloud provider (e.g. AWS, GCP, Azure). Pods share those nodes. CTX calculates cost allocations according to the FinOps Foundation and OpenCost specification:",
-                        bullets: [
-                            "vCPU Cost = Requested Cores Ã Hourly Rate ($0.0316/hr baseline on AWS m6i).",
-                            "RAM Cost = Requested Memory GiB Ã Hourly Rate ($0.0042/hr baseline).",
-                            "Persistent Storage = Bound PVC provisioned GiB Ã Monthly Rate ($0.08/GB EBS gp3).",
-                            "Cluster Idle Reserve = Node capacity not requested by any pod, distributed proportionally across active workloads."
-                        ]
-                    )
-
-                    // Question 2: How do you know savings are real?
-                    methodologySection(
-                        icon: "arrow.down.right.and.arrow.up.left",
-                        color: .green,
-                        title: "2. Why Right-Sizing Saves Real Cloud Money",
-                        description: "In cloud clusters (EKS, GKE, AKS with Cluster Autoscaler or Karpenter), nodes scale based on *Requested* resources, NOT actual used CPU.",
-                        bullets: [
-                            "If your pods request 100 cores but only use 15 cores, your cloud provider forces 25 nodes to stay online.",
-                            "When you right-size container requests to match actual demand, the autoscaler automatically consolidates pods onto fewer nodes and terminates unneeded instances.",
-                            "This directly slashes your monthly cloud invoice without touching application code."
-                        ]
-                    )
-
-                    // Question 3: How do you know you won't break anything?
-                    methodologySection(
-                        icon: "lock.shield.fill",
-                        color: .orange,
-                        title: "3. Safety Guardrails Against Outages & OOMKills",
-                        description: "CTX is engineered to prevent outages, CPU throttling, or OOM (Out Of Memory) crashes:",
-                        bullets: [
-                            "+35% Headroom Buffer: We never set requests to bare minimums. Every recommendation includes a 35% safety headroom above peak consumption.",
-                            "Limits Retained (Uncapped Bursts): We only adjust scheduling requests. Container limits are preserved at 2Ã headroom so unexpected traffic spikes are never throttled.",
-                            "Terminal Verification: We provide the exact 'kubectl top pod' command so you can cross-check live metrics in your own terminal before making changes.",
-                            "Dry-Run Safe: Always test patches with 'kubectl apply --dry-run=server' before deploying."
-                        ]
-                    )
-                }
-                .padding(.vertical, 4)
-            }
-
-            Spacer()
-        }
-        .padding(22)
-        .frame(width: 620, height: 520)
-    }
-
-    private func methodologySection(icon: String, color: Color, title: String, description: String, bullets: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .foregroundStyle(color)
-                    .font(.system(size: 14, weight: .bold))
-                Text(title)
-                    .font(.system(size: 13, weight: .bold))
-            }
-
-            Text(description)
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(bullets, id: \.self) { bullet in
-                    HStack(alignment: .top, spacing: 6) {
-                        Text("â¢")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(color)
-                        Text(bullet)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-            .padding(10)
-            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-        }
-    }
-
-    // MARK: - OpenCost Popover
-
-    private var openCostPopover: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "info.circle.fill")
-                    .foregroundStyle(.blue)
-                Text("How Costs are Calculated")
-                    .font(.headline)
-            }
-
-            Text("CTX provides automatic, zero-setup FinOps estimation using on-demand cloud pricing profiles for CPU, memory, and storage.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Divider()
-
-            Text("Connect OpenCost / Kubecost")
-                .font(.subheadline.weight(.semibold))
-
-            Text("If your cluster has OpenCost or Kubecost installed, CTX automatically proxies live telemetry. To install the lightweight OpenCost exporter, run:")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            let helmCmd = "helm upgrade --install opencost opencost-charts/opencost --namespace opencost --create-namespace"
-            HStack {
-                Text(helmCmd)
-                    .font(.system(size: 10, design: .monospaced))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(helmCmd, forType: .string)
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(8)
-            .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
-        }
-        .padding(16)
-        .frame(width: 380)
-    }
-
     // MARK: - Helpers
 
-    private func formatCurrency(_ value: Double) -> String {
+    var hasCostPricing: Bool {
+        report.dataSource.isLiveAgent || viewModel.finopsPricing.hasExplicitRates
+    }
+
+    func formatCores(_ cores: Double) -> String {
+        if cores <= 0 { return "0 Cores" }
+        if cores < 1.0 {
+            return "\(Int(round(cores * 1000)))m"
+        }
+        return String(format: "%.2f Cores", cores)
+    }
+
+    func formatGiB(_ gib: Double) -> String {
+        if gib <= 0 { return "0 GiB" }
+        if gib < 1.0 {
+            return "\(Int(round(gib * 1024))) MiB"
+        }
+        return String(format: "%.1f GiB", gib)
+    }
+
+    func formatCurrency(_ value: Double) -> String {
+        guard report.dataSource.isLiveAgent || viewModel.finopsPricing.hasExplicitRates else { return "Unavailable" }
         let formatter = NumberFormatter()
         formatter.numberStyle = .currency
         formatter.currencySymbol = "$"
         formatter.maximumFractionDigits = 2
         return formatter.string(from: NSNumber(value: value)) ?? String(format: "$%.2f", value)
+    }
+
+    private var hasComparableEfficiency: Bool {
+        report.rows.contains(where: \.hasLiveUsage)
+    }
+
+    private enum ProviderBannerAction {
+        case none
+        case setup
+        case retry
+    }
+
+    private func finopsProviderBanner(
+        _ message: String,
+        systemImage: String,
+        tint: Color,
+        action: ProviderBannerAction = .none
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .foregroundStyle(tint)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+            Spacer()
+            if action == .setup {
+                Button {
+                    viewModel.openOpenCostSetupWorkflow()
+                } label: {
+                    Label("Set up OpenCost…", systemImage: "shield.lefthalf.filled.badge.checkmark")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(tint)
+                .controlSize(.small)
+            } else if action == .retry {
+                Button {
+                    viewModel.loadFinOpsCosts(bypassCache: true)
+                } label: {
+                    Label("Retry Connection", systemImage: "arrow.clockwise")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(tint)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tint.opacity(0.25), lineWidth: 0.75)
+        }
     }
 
     private func efficiencyColor(_ score: Double) -> Color {

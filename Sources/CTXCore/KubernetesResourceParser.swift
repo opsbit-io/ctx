@@ -457,10 +457,16 @@ public enum KubernetesResourceParser {
         let involved = dict(item["involvedObject"])
         let type = string(item["type"])
         let lastSeen = string(item["lastTimestamp"]).isEmpty ? string(item["eventTime"]) : string(item["lastTimestamp"])
+        let involvedKind = string(involved["kind"])
+        let involvedName = string(involved["name"])
+        let involvedObject = involvedKind.isEmpty && involvedName.isEmpty
+            ? "-"
+            : "\(involvedKind)/\(involvedName)"
+        let count = string(item["count"])
         return row(
             key(metadata),
-            ["Namespace": namespace(metadata), "Object": "\(string(involved["kind"]))/\(string(involved["name"]))", "Type": type, "Reason": string(item["reason"]), "Message": string(item["message"]), "Last": relativeAge(from: lastSeen), "Count": String(int(item["count"], defaultValue: 1))],
-            warning: type.lowercased() != "normal",
+            ["Namespace": namespace(metadata), "Object": involvedObject, "Type": type.isEmpty ? "-" : type, "Reason": string(item["reason"]).isEmpty ? "-" : string(item["reason"]), "Message": string(item["message"]), "Last": relativeAge(from: lastSeen), "Count": count.isEmpty ? "-" : count],
+            warning: type.caseInsensitiveCompare("Warning") == .orderedSame,
             sortValue: lastSeen
         )
     }
@@ -496,10 +502,10 @@ public enum KubernetesResourceParser {
             "Namespace": ns,
             "Name": string(metadata["name"]),
             "Reference": ref,
-            "Targets": "active",
+            "Targets": "-",
             "MinPods": minPods.isEmpty ? "1" : minPods,
             "MaxPods": maxPods.isEmpty ? "-" : maxPods,
-            "Replicas": currentReplicas.isEmpty ? "0" : currentReplicas,
+            "Replicas": currentReplicas.isEmpty ? "-" : currentReplicas,
             "Age": age(metadata)
         ])
     }
@@ -514,7 +520,7 @@ public enum KubernetesResourceParser {
         return row("\(ns)/\(string(metadata["name"]))", [
             "Namespace": ns,
             "Name": string(metadata["name"]),
-            "Status": string(status["phase"]).isEmpty ? "Bound" : string(status["phase"]),
+            "Status": string(status["phase"]).isEmpty ? "-" : string(status["phase"]),
             "Volume": string(spec["volumeName"]).isEmpty ? "-" : string(spec["volumeName"]),
             "Capacity": storage.isEmpty ? "-" : storage,
             "Access Modes": (spec["accessModes"] as? [String])?.joined(separator: ",") ?? "-",

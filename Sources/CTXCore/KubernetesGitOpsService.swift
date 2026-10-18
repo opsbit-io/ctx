@@ -14,7 +14,28 @@ public enum GitOpsSourceKind: String, Equatable, Sendable {
     case helmFromGit = "Helm (Git)"
     /// A chart or manifest bundle pulled from an OCI registry.
     case oci = "OCI"
+    /// Progressive delivery canary managed by Flagger.
+    case canary = "Canary"
     case unknown = "—"
+}
+
+public struct GitOpsManagedResource: Identifiable, Equatable, Sendable {
+    public var id: String { "\(group)/\(kind)/\(namespace)/\(name)" }
+    public let group: String
+    public let kind: String
+    public let namespace: String
+    public let name: String
+    public let syncStatus: String
+    public let healthStatus: String
+
+    public init(group: String = "", kind: String, namespace: String, name: String, syncStatus: String = "—", healthStatus: String = "—") {
+        self.group = group
+        self.kind = kind
+        self.namespace = namespace
+        self.name = name
+        self.syncStatus = syncStatus
+        self.healthStatus = healthStatus
+    }
 }
 
 public struct GitOpsApplicationItem: Identifiable, Equatable, Sendable {
@@ -47,6 +68,12 @@ public struct GitOpsApplicationItem: Identifiable, Equatable, Sendable {
     /// Additional sources on a multi-source ArgoCD application, beyond the first.
     public var additionalSourceCount: Int
     public var age: String
+    /// Latest status message or condition message (e.g. reconciliation error or rollout info).
+    public var message: String
+    /// Managed Kubernetes resources reported by ArgoCD `status.resources` or Flagger targetRef.
+    public var managedResources: [GitOpsManagedResource]
+    /// Progressive delivery canary weight percentage (0...100) when `provider == "Flagger"`.
+    public var canaryWeightPercent: Int?
 
     public init(
         namespace: String,
@@ -55,16 +82,19 @@ public struct GitOpsApplicationItem: Identifiable, Equatable, Sendable {
         provider: String,
         kind: String,
         sourceKind: GitOpsSourceKind = .unknown,
-        syncStatus: String,
-        healthStatus: String,
-        repoURL: String,
+        syncStatus: String = KubernetesGitOpsService.unknownValue,
+        healthStatus: String = KubernetesGitOpsService.unknownValue,
+        repoURL: String = KubernetesGitOpsService.unknownValue,
         chart: String = KubernetesGitOpsService.unknownValue,
         path: String = KubernetesGitOpsService.unknownValue,
-        targetRevision: String,
+        targetRevision: String = KubernetesGitOpsService.unknownValue,
         syncedRevision: String = KubernetesGitOpsService.unknownValue,
         managedBy: String = KubernetesGitOpsService.unknownValue,
         additionalSourceCount: Int = 0,
-        age: String
+        age: String = KubernetesGitOpsService.unknownValue,
+        message: String = "",
+        managedResources: [GitOpsManagedResource] = [],
+        canaryWeightPercent: Int? = nil
     ) {
         self.namespace = namespace
         self.destinationNamespace = destinationNamespace
@@ -82,6 +112,9 @@ public struct GitOpsApplicationItem: Identifiable, Equatable, Sendable {
         self.managedBy = managedBy
         self.additionalSourceCount = additionalSourceCount
         self.age = age
+        self.message = message
+        self.managedResources = managedResources
+        self.canaryWeightPercent = canaryWeightPercent
     }
 }
 
@@ -119,6 +152,19 @@ public enum KubernetesGitOpsService {
             let destinationNamespace = (destination["namespace"] as? String) ?? ""
 
             let syncDict = status["sync"] as? [String: Any] ?? [:]
+            let rawResources = status["resources"] as? [[String: Any]] ?? []
+            let managed = rawResources.compactMap { res -> GitOpsManagedResource? in
+                guard let rKind = res["kind"] as? String, let rName = res["name"] as? String else { return nil }
+                let rGroup = (res["group"] as? String) ?? ""
+                let rNs = (res["namespace"] as? String) ?? destinationNamespace
+                let rSync = value(res["status"])
+                let rHealth = value((res["health"] as? [String: Any])?["status"])
+                return GitOpsManagedResource(group: rGroup, kind: rKind, namespace: rNs, name: rName, syncStatus: rSync, healthStatus: rHealth)
+            }
+            let opState = status["operationState"] as? [String: Any]
+            let opMsg = (opState?["message"] as? String)
+                ?? ((status["conditions"] as? [[String: Any]])?.first?["message"] as? String)
+                ?? ""
 
             return GitOpsApplicationItem(
                 namespace: (metadata["namespace"] as? String) ?? unknownValue,
@@ -136,7 +182,9 @@ public enum KubernetesGitOpsService {
                 syncedRevision: shortRevision(syncDict["revision"] as? String),
                 managedBy: argoOwner(metadata),
                 additionalSourceCount: additional,
-                age: relativeAge(from: metadata["creationTimestamp"] as? String)
+                age: relativeAge(from: metadata["creationTimestamp"] as? String),
+                message: opMsg,
+                managedResources: managed
             )
         }
     }
@@ -239,15 +287,16 @@ public enum KubernetesGitOpsService {
                 healthStatus = "Healthy"
             case "False":
                 syncStatus = "OutOfSync"
-                healthStatus = (ready?["reason"] as? String) ?? "Degraded"
+                healthStatus = (ready?["reason"] as? String) ?? "Not Ready"
             default:
-                syncStatus = "Progressing"
+                syncStatus = unknownValue
                 healthStatus = unknownValue
             }
         }
 
         let destinationNamespace = (spec["targetNamespace"] as? String) ?? (metadata["namespace"] as? String) ?? ""
         let resolved = source(spec, status)
+        let readyMsg = (ready?["message"] as? String) ?? ""
         return GitOpsApplicationItem(
             namespace: (metadata["namespace"] as? String) ?? unknownValue,
             destinationNamespace: destinationNamespace,
@@ -262,8 +311,95 @@ public enum KubernetesGitOpsService {
             path: resolved.path,
             targetRevision: resolved.target,
             syncedRevision: resolved.synced,
-            age: relativeAge(from: metadata["creationTimestamp"] as? String)
+            age: relativeAge(from: metadata["creationTimestamp"] as? String),
+            message: readyMsg
         )
+    }
+
+    // MARK: - Flagger (Progressive Delivery Canaries)
+
+    public static func parseFlaggerCanaries(_ items: [[String: Any]]) -> [GitOpsApplicationItem] {
+        items.compactMap { item in
+            let metadata = item["metadata"] as? [String: Any] ?? [:]
+            guard let name = metadata["name"] as? String, !name.isEmpty else { return nil }
+            let ns = (metadata["namespace"] as? String) ?? unknownValue
+            let spec = item["spec"] as? [String: Any] ?? [:]
+            let status = item["status"] as? [String: Any] ?? [:]
+
+            let targetRef = spec["targetRef"] as? [String: Any] ?? [:]
+            let targetKind = value(targetRef["kind"])
+            let targetName = value(targetRef["name"])
+
+            let analysis = spec["analysis"] as? [String: Any] ?? [:]
+            let maxWeight = analysis["maxWeight"] as? Int
+            let canaryWeight = status["canaryWeight"] as? Int
+            let phase = (status["phase"] as? String) ?? unknownValue
+            let isSuspended = (spec["suspend"] as? Bool) == true
+
+            let syncStatus: String
+            let healthStatus: String
+            let weightPct: Int
+
+            if isSuspended {
+                syncStatus = "Suspended"
+                healthStatus = "Suspended"
+                weightPct = canaryWeight ?? 0
+            } else {
+                switch phase {
+                case "Succeeded", "Initialized":
+                    syncStatus = "Synced"
+                    healthStatus = "Healthy"
+                    weightPct = 100
+                case "Failed":
+                    syncStatus = "OutOfSync"
+                    healthStatus = "Degraded"
+                    if let maxWeight, maxWeight > 0, let canaryWeight {
+                        weightPct = min(100, Int(round(Double(canaryWeight) / Double(maxWeight) * 100)))
+                    } else {
+                        weightPct = 0
+                    }
+                case "Progressing", "Promoting", "Finalising", "Waiting", "WaitingPromotion", "Initializing":
+                    syncStatus = "Progressing"
+                    healthStatus = phase
+                    if let maxWeight, maxWeight > 0, let canaryWeight {
+                        weightPct = min(100, Int(round(Double(canaryWeight) / Double(maxWeight) * 100)))
+                    } else {
+                        weightPct = 0
+                    }
+                default:
+                    syncStatus = phase
+                    healthStatus = phase
+                    weightPct = 0
+                }
+            }
+
+            let conditions = status["conditions"] as? [[String: Any]] ?? []
+            let msg = (conditions.first?["message"] as? String) ?? ""
+
+            return GitOpsApplicationItem(
+                namespace: ns,
+                destinationNamespace: ns,
+                name: name,
+                provider: "Flagger",
+                kind: "Canary",
+                sourceKind: .canary,
+                syncStatus: syncStatus,
+                healthStatus: healthStatus,
+                repoURL: "\(targetKind)/\(targetName)",
+                chart: unknownValue,
+                path: value(spec["provider"]),
+                targetRevision: maxWeight.map { "max \($0)%" } ?? unknownValue,
+                syncedRevision: canaryWeight.map { "\($0)% weight" } ?? unknownValue,
+                managedBy: "\(targetKind)/\(targetName)",
+                additionalSourceCount: 0,
+                age: relativeAge(from: metadata["creationTimestamp"] as? String),
+                message: msg,
+                managedResources: targetKind == unknownValue || targetName == unknownValue
+                    ? []
+                    : [GitOpsManagedResource(kind: targetKind, namespace: ns, name: targetName, syncStatus: syncStatus, healthStatus: healthStatus)],
+                canaryWeightPercent: canaryWeight == nil ? nil : weightPct
+            )
+        }
     }
 
     // MARK: - Shared
@@ -322,5 +458,233 @@ public enum KubernetesGitOpsService {
         let hours = minutes / 60
         if hours < 48 { return "\(hours)h" }
         return "\(hours / 24)d"
+    }
+}
+
+// MARK: - GitOps Management & Operations
+
+public protocol KubernetesGitOpsManaging: Sendable {
+    func sync(
+        app: GitOpsApplicationItem,
+        context: KubernetesContextProfile,
+        prune: Bool
+    ) async -> KubernetesLifecycleActionResult
+
+    func refresh(
+        app: GitOpsApplicationItem,
+        context: KubernetesContextProfile,
+        hard: Bool
+    ) async -> KubernetesLifecycleActionResult
+
+    func suspend(
+        app: GitOpsApplicationItem,
+        context: KubernetesContextProfile,
+        suspended: Bool
+    ) async -> KubernetesLifecycleActionResult
+}
+
+public final class KubernetesGitOpsManager: KubernetesGitOpsManaging {
+    private let kubectl: any KubectlRunning & KubectlCommandBuilding
+    private let timeout: TimeInterval
+
+    public init(
+        kubectl: any KubectlRunning & KubectlCommandBuilding = KubectlRunner(),
+        timeout: TimeInterval = 15
+    ) {
+        self.kubectl = kubectl
+        self.timeout = timeout
+    }
+
+    public func sync(
+        app: GitOpsApplicationItem,
+        context: KubernetesContextProfile,
+        prune: Bool = true
+    ) async -> KubernetesLifecycleActionResult {
+        let namespace = app.namespace.isEmpty || app.namespace == KubernetesGitOpsService.unknownValue ? "argocd" : app.namespace
+
+        switch app.provider {
+        case "ArgoCD":
+            let pruneFlag = prune ? "true" : "false"
+            let patchPayload = "{\"operation\":{\"sync\":{\"prune\":\(pruneFlag),\"syncStrategy\":{\"hook\":{}}}}}"
+            let args = [
+                "patch", "application", app.name,
+                "--namespace", namespace,
+                "--type", "merge",
+                "-p", patchPayload
+            ]
+            return await run(
+                args,
+                context: context,
+                successMessage: "Sync initiated for ArgoCD app '\(app.name)'",
+                failureMessage: "Failed to trigger sync for '\(app.name)'"
+            )
+
+        case "Flux CD":
+            let resourceKind = app.kind.lowercased() == "helmrelease" ? "helmrelease" : "kustomization"
+            let timestamp = String(Int(Date().timeIntervalSince1970))
+            let args = [
+                "annotate", resourceKind, app.name,
+                "--namespace", namespace,
+                "reconcile.fluxcd.io/requestedAt=\(timestamp)",
+                "--overwrite"
+            ]
+            return await run(
+                args,
+                context: context,
+                successMessage: "Reconciliation initiated for Flux \(app.kind) '\(app.name)'",
+                failureMessage: "Failed to trigger reconciliation for '\(app.name)'"
+            )
+
+        case "Flagger":
+            let args = [
+                "annotate", "canary", app.name,
+                "--namespace", namespace,
+                "flagger.app/manual-promote=true",
+                "--overwrite"
+            ]
+            return await run(
+                args,
+                context: context,
+                successMessage: "Manual promotion initiated for Canary '\(app.name)'",
+                failureMessage: "Failed to promote Canary '\(app.name)'"
+            )
+
+        default:
+            return KubernetesLifecycleActionResult(
+                success: false,
+                message: "Unsupported provider",
+                errorDetails: "Sync action is not supported for provider '\(app.provider)'."
+            )
+        }
+    }
+
+    public func refresh(
+        app: GitOpsApplicationItem,
+        context: KubernetesContextProfile,
+        hard: Bool
+    ) async -> KubernetesLifecycleActionResult {
+        let namespace = app.namespace.isEmpty || app.namespace == KubernetesGitOpsService.unknownValue ? "argocd" : app.namespace
+
+        switch app.provider {
+        case "ArgoCD":
+            let refreshType = hard ? "hard" : "normal"
+            let args = [
+                "annotate", "application", app.name,
+                "--namespace", namespace,
+                "argocd.argoproj.io/refresh=\(refreshType)",
+                "--overwrite"
+            ]
+            return await run(
+                args,
+                context: context,
+                successMessage: "\(hard ? "Hard refresh" : "Refresh") initiated for ArgoCD app '\(app.name)'",
+                failureMessage: "Failed to refresh '\(app.name)'"
+            )
+
+        case "Flux CD":
+            let resourceKind = app.kind.lowercased() == "helmrelease" ? "helmrelease" : "kustomization"
+            let timestamp = String(Int(Date().timeIntervalSince1970))
+            let args = [
+                "annotate", resourceKind, app.name,
+                "--namespace", namespace,
+                "reconcile.fluxcd.io/requestedAt=\(timestamp)",
+                "--overwrite"
+            ]
+            return await run(
+                args,
+                context: context,
+                successMessage: "Source refresh initiated for Flux \(app.kind) '\(app.name)'",
+                failureMessage: "Failed to refresh Flux source for '\(app.name)'"
+            )
+
+        default:
+            return KubernetesLifecycleActionResult(
+                success: false,
+                message: "Unsupported provider",
+                errorDetails: "Refresh action is not supported for provider '\(app.provider)'."
+            )
+        }
+    }
+
+    public func suspend(
+        app: GitOpsApplicationItem,
+        context: KubernetesContextProfile,
+        suspended: Bool
+    ) async -> KubernetesLifecycleActionResult {
+        let namespace = app.namespace.isEmpty || app.namespace == KubernetesGitOpsService.unknownValue ? "flux-system" : app.namespace
+        let suspendFlag = suspended ? "true" : "false"
+        let patchPayload = "{\"spec\":{\"suspend\":\(suspendFlag)}}"
+
+        switch app.provider {
+        case "Flux CD":
+            let resourceKind = app.kind.lowercased() == "helmrelease" ? "helmrelease" : "kustomization"
+            let args = [
+                "patch", resourceKind, app.name,
+                "--namespace", namespace,
+                "--type", "merge",
+                "-p", patchPayload
+            ]
+            return await run(
+                args,
+                context: context,
+                successMessage: "\(suspended ? "Suspended" : "Resumed") Flux \(app.kind) '\(app.name)'",
+                failureMessage: "Failed to \(suspended ? "suspend" : "resume") '\(app.name)'"
+            )
+
+        case "Flagger":
+            let args = [
+                "patch", "canary", app.name,
+                "--namespace", namespace,
+                "--type", "merge",
+                "-p", patchPayload
+            ]
+            return await run(
+                args,
+                context: context,
+                successMessage: "\(suspended ? "Suspended" : "Resumed") Canary '\(app.name)'",
+                failureMessage: "Failed to \(suspended ? "suspend" : "resume") '\(app.name)'"
+            )
+
+        default:
+            return KubernetesLifecycleActionResult(
+                success: false,
+                message: "Unsupported provider",
+                errorDetails: "Suspend/Resume action is not supported for provider '\(app.provider)'."
+            )
+        }
+    }
+
+    private func run(
+        _ arguments: [String],
+        context: KubernetesContextProfile,
+        successMessage: String,
+        failureMessage: String
+    ) async -> KubernetesLifecycleActionResult {
+        do {
+            let args = context.kubeconfigArguments + arguments
+            var command = try kubectl.inspectionCommand(context: context.contextName, arguments: args)
+            command.environmentOverrides = context.kubeconfigEnvironment
+
+            let result = try await kubectl.run(command, timeout: timeout)
+            let trimmedOut = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedErr = KubernetesDiagnosticClassifier.sanitize(result.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if result.exitCode == 0 {
+                return KubernetesLifecycleActionResult(success: true, message: successMessage, errorDetails: nil, stdout: trimmedOut)
+            } else {
+                return KubernetesLifecycleActionResult(
+                    success: false,
+                    message: failureMessage,
+                    errorDetails: trimmedErr.isEmpty ? "Process exited with code \(result.exitCode)" : trimmedErr,
+                    stdout: trimmedOut
+                )
+            }
+        } catch {
+            return KubernetesLifecycleActionResult(
+                success: false,
+                message: failureMessage,
+                errorDetails: error.localizedDescription
+            )
+        }
     }
 }

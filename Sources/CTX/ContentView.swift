@@ -15,18 +15,20 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(store: store)
-            .background(colorScheme == .light ? Color(NSColor.controlBackgroundColor).opacity(0.5) : Color.black.opacity(0.25))
-            .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 280)
+                .background(colorScheme == .light ? Color(NSColor.controlBackgroundColor).opacity(0.5) : Color.black.opacity(0.25))
+                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 280)
         } detail: {
             DetailPane(store: store)
                 .background(colorScheme == .light ? Color(NSColor.windowBackgroundColor) : Color(white: 0.12).opacity(0.65))
         }
+        .toolbar(.hidden, for: .windowToolbar)
+        .ignoresSafeArea(.all, edges: .top)
         // This window contains a live, scrolling SwiftUI List. In-window blending
         // keeps that content in the same compositor hierarchy; behind-window
         // blending on a fully transparent window can leave stale list layers visible
         // after disclosure groups move or collapse.
         .background(VisualEffectBackground(material: .hudWindow, blendingMode: .withinWindow))
-        .ctxChromelessWindow()
+        .ctxChromelessWindow(removeToolbar: true)
         .preferredColorScheme(currentAppearance.colorScheme)
         .profileLifecyclePresentationHost(store: store, surface: .mainWindow)
         // Unlike a system sheet, a plain `.overlay` doesn't remove what's
@@ -149,18 +151,15 @@ struct DetailPane: View {
             // Main content flows BELOW the banners — never covered
             if let profile = store.selectedProfile {
                 ProfileDetailView(profile: profile, store: store)
-                    .navigationTitle(profile.name)
             } else if let folder = store.selectedFolder {
                 FolderDetailView(folder: folder, store: store)
-                    .navigationTitle(folder.name)
             } else {
                 WelcomeView()
-                    .navigationTitle("CTX")
             }
         }
+        .padding(.top, 16)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: store.showExpirationWarning)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: store.updateAvailable)
-
     }
 }
 
@@ -243,7 +242,6 @@ private struct ActiveConnectionRow: View {
                     Text(profile.name)
                         .font(.system(.caption, weight: .semibold))
                         .lineLimit(1)
-
 
                     if !profile.contextSubtitle.isEmpty {
                         Text("·")

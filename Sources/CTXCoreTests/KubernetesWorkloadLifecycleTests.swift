@@ -41,6 +41,28 @@ func testKubernetesResourceParserBatchParsing() {
     assert(parsed?[.pods]?.rows.first?.cells["Name"] == "frontend-pod-1")
 }
 
+func testKubernetesResourceParserKeepsUnreportedStateUnknown() {
+    let rawJSON = """
+    {"items":[
+      {"apiVersion":"v1","kind":"Event","metadata":{"name":"pending-event","namespace":"ops"},"involvedObject":{}},
+      {"apiVersion":"autoscaling/v2","kind":"HorizontalPodAutoscaler","metadata":{"name":"api","namespace":"ops"},"spec":{"maxReplicas":5,"scaleTargetRef":{"kind":"Deployment","name":"api"}},"status":{}},
+      {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"data","namespace":"ops"},"spec":{},"status":{}}
+    ]}
+    """
+    let parsed = KubernetesResourceParser.parseBatch(
+        stdout: rawJSON,
+        requestedKinds: [.events, .hpa, .pvc]
+    )
+
+    let event = parsed?[.events]?.rows.first
+    assert(event?.cells["Type"] == "-")
+    assert(event?.cells["Count"] == "-")
+    assert(event?.warning == false, "an event with no reported type is not automatically a warning")
+    assert(parsed?[.hpa]?.rows.first?.cells["Replicas"] == "-")
+    assert(parsed?[.hpa]?.rows.first?.cells["Targets"] == "-")
+    assert(parsed?[.pvc]?.rows.first?.cells["Status"] == "-")
+}
+
 func testYAMLDiffCalculator() {
     let orig = """
 apiVersion: v1
@@ -283,6 +305,7 @@ func testKubernetesWorkloadLifecyclePreflight() async {
 
 func runKubernetesWorkloadLifecycleTests() async {
     testKubernetesResourceParserBatchParsing()
+    testKubernetesResourceParserKeepsUnreportedStateUnknown()
     testYAMLDiffCalculator()
     await testKubernetesYAMLApplier()
     await testKubernetesWorkloadLifecycleService()

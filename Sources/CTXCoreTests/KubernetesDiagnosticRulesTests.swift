@@ -211,6 +211,41 @@ func testKubernetesDiagnosticValidationRules() throws {
     assert(report10.issuesByResourceID["node-1"]?.contains(where: { $0.ruleId == "NODE_NOT_READY" }) == true, "Must detect NODE_NOT_READY")
 }
 
+/// A Pod and a Workload template with identical `Security` / `HasLimits` / `Probes`
+/// cells must raise the same rule IDs — including `SECURITY_HOST_NAMESPACE`, which
+/// used to be wired for Pods only and silently never fired for Workloads.
+func testPodAndWorkloadShareTheSameSecurityAndReliabilityRules() throws {
+    let insecureCells = [
+        "Name": "insecure",
+        "Namespace": "prod",
+        "Security": "privileged,runAsRoot,hostNetwork",
+        "HasLimits": "false",
+        "Probes": ""
+    ]
+    let insecurePod = KubernetesResourceRow(id: "pod-parity", cells: insecureCells)
+    let insecureWorkload = KubernetesResourceRow(id: "wkl-parity", cells: insecureCells)
+
+    let report = KubernetesConfigurationValidator.validate(
+        services: [],
+        workloads: [insecureWorkload],
+        pods: [insecurePod],
+        ingress: [],
+        configMaps: [],
+        secrets: [],
+        pvcs: [],
+        nodes: []
+    )
+
+    let podRuleIds = Set((report.issuesByResourceID["pod-parity"] ?? []).map(\.ruleId))
+    let workloadRuleIds = Set((report.issuesByResourceID["wkl-parity"] ?? []).map(\.ruleId))
+    let expected: Set<String> = [
+        "SECURITY_PRIVILEGED", "SECURITY_RUN_AS_ROOT", "SECURITY_HOST_NAMESPACE",
+        "RELIABILITY_NO_LIMITS", "RELIABILITY_MISSING_PROBES"
+    ]
+    assert(podRuleIds == expected, "Pod rule IDs \(podRuleIds) must equal \(expected)")
+    assert(workloadRuleIds == expected, "Workload rule IDs \(workloadRuleIds) must equal \(expected) — SECURITY_HOST_NAMESPACE must now fire for workloads too")
+}
+
 func testClusterAnomalyNotificationDebounceAndPayload() {
     let payload = ClusterAnomalyNotificationPayload(
         contextID: "ctx-prod-123",
@@ -233,7 +268,43 @@ func testClusterAnomalyNotificationDebounceAndPayload() {
     AppNotificationService.shared.sendClusterAnomaly(payload)
 }
 
+
+func testDiagnosticValidatorDeduplicatesRepeatedConfigMapsAndBuildsUniqueIssueIDs() throws {
+    let podWithRepeatedCMs = KubernetesResourceRow(id: "pod-dup", cells: [
+        "Name": "dup-pod",
+        "Namespace": "prod",
+        "Status": "Running",
+        "Ready": "1/1",
+        "Restarts": "0",
+        "ConfigMaps": "missing-cm-a, missing-cm-a, missing-cm-b",
+        "Secrets": "missing-sec-1, missing-sec-1"
+    ])
+    let existingCM = KubernetesResourceRow(id: "cm-ok", cells: ["Name": "ok-cm", "Namespace": "prod"])
+    let existingSec = KubernetesResourceRow(id: "sec-ok", cells: ["Name": "ok-sec", "Namespace": "prod"])
+
+    let report = KubernetesConfigurationValidator.validate(
+        services: [],
+        workloads: [],
+        pods: [podWithRepeatedCMs],
+        ingress: [],
+        configMaps: [existingCM],
+        secrets: [existingSec],
+        pvcs: [],
+        nodes: []
+    )
+    let issues = report.issuesByResourceID["pod-dup"] ?? []
+    let cmIssues = issues.filter { $0.ruleId == "CONFIGMAP_NOT_FOUND" }
+    let secIssues = issues.filter { $0.ruleId == "SECRET_NOT_FOUND" }
+
+    // Repeated 'missing-cm-a' must be deduplicated into 1 issue, plus 'missing-cm-b' = 2 issues with distinct IDs
+    assert(cmIssues.count == 2, "Expected 2 deduplicated ConfigMap issues, got \(cmIssues.count)")
+    assert(Set(cmIssues.map(\.id)).count == 2, "Each ConfigMap issue on the same pod must have a unique ID for SwiftUI ForEach")
+    assert(secIssues.count == 1, "Expected 1 deduplicated Secret issue, got \(secIssues.count)")
+}
+
 func runKubernetesDiagnosticRulesTests() throws {
+    try testDiagnosticValidatorDeduplicatesRepeatedConfigMapsAndBuildsUniqueIssueIDs()
     try testKubernetesDiagnosticValidationRules()
+    try testPodAndWorkloadShareTheSameSecurityAndReliabilityRules()
     testClusterAnomalyNotificationDebounceAndPayload()
 }

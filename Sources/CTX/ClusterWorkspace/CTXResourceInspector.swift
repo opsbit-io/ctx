@@ -105,6 +105,23 @@ struct CTXResourceInspector: View {
             maxHeight: heightRange.max
         )
         .onExitCommand { viewModel.dismissPresentation() }
+        .overlay(alignment: .bottom) {
+            if let result = viewModel.podExecResult {
+                CTXFloatingToast(
+                    text: result.message,
+                    systemImage: result.success ? "checkmark.circle.fill" : "exclamationmark.octagon.fill",
+                    tint: result.success ? .green : .red,
+                    onDismiss: {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            viewModel.podExecResult = nil
+                        }
+                    }
+                )
+                .padding(.bottom, 20)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.8), value: viewModel.podExecResult != nil)
     }
 }
 
@@ -117,12 +134,24 @@ struct CTXResourceInspectorHeader: View {
     let dismiss: () -> Void
 
     var body: some View {
+        let brand = CTXBrandIconResolver.resolve(for: detail.title + " " + detail.subtitle)
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: detail.warning ? "exclamationmark.triangle.fill" : "info.circle")
-                .font(.system(.callout, weight: .semibold))
-                .foregroundStyle(detail.warning ? .orange : .blue)
-                .frame(width: 28, height: 28)
-                .background((detail.warning ? Color.orange : Color.blue).opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            Group {
+                if let asset = brand.svgAsset {
+                    CTXBrandSVGIcon(
+                        assetName: asset,
+                        size: 20,
+                        fallbackSystemImage: detail.warning ? "exclamationmark.triangle.fill" : brand.fallbackSymbol,
+                        fallbackTint: detail.warning ? .orange : brand.fallbackTint
+                    )
+                } else {
+                    Image(systemName: detail.warning ? "exclamationmark.triangle.fill" : brand.fallbackSymbol)
+                        .font(.system(.callout, weight: .semibold))
+                        .foregroundStyle(detail.warning ? .orange : brand.fallbackTint)
+                }
+            }
+            .frame(width: 28, height: 28)
+            .background((detail.warning ? Color.orange : brand.fallbackTint).opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(detail.title)

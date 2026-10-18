@@ -28,6 +28,9 @@ struct ClusterWorkspaceSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            Color.clear
+                .frame(height: 28)
+
             ScrollViewReader { proxy in
                 List(selection: sectionBinding) {
                     ForEach(ClusterWorkspaceCategory.allCases) { category in

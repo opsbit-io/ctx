@@ -15,6 +15,14 @@ public enum AuditEventType: String, Codable, Sendable {
     case mcpApplyBlocked
     case workloadLifecycleAction
     case workloadLifecycleActionFailed
+    case openCostPreflightChecked
+    case openCostInstallStarted
+    case openCostInstalled
+    case openCostInstallFailed
+    case podExecOpened
+    case podExecFailed
+    case gitOpsActionTriggered
+    case gitOpsActionFailed
 }
 
 public struct AuditEvent: Codable, Equatable, Sendable {

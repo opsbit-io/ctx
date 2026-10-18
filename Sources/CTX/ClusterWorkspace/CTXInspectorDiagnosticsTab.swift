@@ -363,7 +363,7 @@ struct CTXInspectorDiagnosticsTab: View {
             let isRunning = status.lowercased() == "running" || status.lowercased() == "active"
             checks.append(DiagnosticEvaluatedCheck(
                 title: "Pod Runtime Phase",
-                subtitle: "Phase: \(status) · Restarts: \(selection.row.cells["Restarts"] ?? "0")",
+                subtitle: "Phase: \(status) · Restarts: \(selection.row.cells["Restarts"] ?? "—")",
                 status: isRunning ? .passed : .warning,
                 icon: isRunning ? "checkmark.circle.fill" : "exclamationmark.circle.fill"
             ))

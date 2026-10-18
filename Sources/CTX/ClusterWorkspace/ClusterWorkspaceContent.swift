@@ -17,17 +17,14 @@ struct ClusterWorkspaceContent: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             case .issues:
-                ScrollView {
-                    TroubledWorkloadsView(viewModel: viewModel)
-                        .padding(22)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                TroubledWorkloadsView(viewModel: viewModel)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .events:
+                ClusterEventsView(viewModel: viewModel)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .logs:
-                ScrollView {
-                    ClusterLogsView(viewModel: viewModel)
-                        .padding(22)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                ClusterLogsView(viewModel: viewModel)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .topology:
                 ClusterTopologyView(viewModel: viewModel)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -55,6 +52,9 @@ struct ClusterWorkspaceContent: View {
                         .padding(22)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+            case .gitops:
+                ClusterGitOpsView(viewModel: viewModel)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .helm:
                 ClusterHelmView(viewModel: viewModel)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -73,7 +73,7 @@ struct ClusterWorkspaceContent: View {
             }
         }
         // Fresh view identity per section → instant zero-stutter tab switching.
-        .id(viewModel.selectedSection)
+        .id("\(viewModel.context.id)-\(viewModel.selectedSection.rawValue)")
         // Both Overview and Nodes read live utilisation, so the poll follows either.
         .task(id: viewModel.selectedSection) {
             if viewModel.selectedSection == .nodes || viewModel.selectedSection == .finops {
@@ -102,7 +102,7 @@ struct ClusterWorkspaceContent: View {
             refresh: { viewModel.loadSelectedSection(bypassCache: true) },
             selectRow: { viewModel.selectResource($0, in: viewModel.selectedSection) }
         )
-        .id("\(viewModel.selectedSection.id)-\(viewModel.selectedNamespace.storageValue)")
+        .id("\(viewModel.context.id)-\(viewModel.selectedSection.id)-\(viewModel.selectedNamespace.storageValue)")
     }
 
     private var sectionNotice: String? {

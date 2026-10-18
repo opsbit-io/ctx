@@ -26,6 +26,11 @@ struct CTXInspectorOverviewTab: View {
         VStack(alignment: .leading, spacing: 12) {
             CTXInspectorFieldRow(label: "Reference", value: detail.safeReference, monospaced: true)
 
+            if selection.kind == .pods {
+                Divider().opacity(0.3)
+                PodShellActionView(viewModel: viewModel, selection: selection)
+            }
+
             if selection.kind == .workloads, let controllerKind = viewModel.controllerKind(for: selection.row) {
                 Divider().opacity(0.3)
                 WorkloadLifecycleActionsView(viewModel: viewModel, selection: selection, controllerKind: controllerKind)

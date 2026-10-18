@@ -85,3 +85,47 @@ struct DiagnosticCategoryBadge: View {
         .background(Color.secondary.opacity(0.10), in: Capsule())
     }
 }
+
+extension KubernetesContextProfile {
+    /// Human-friendly short name for window titles, tabs, and headers (e.g. "example-cluster" instead of full ARN).
+    public var cleanClusterName: String {
+        let name = contextName
+        if name.hasPrefix("arn:aws:eks:") {
+            if let last = name.split(separator: "/").last {
+                return String(last)
+            }
+        }
+        if !clusterName.isEmpty && !clusterName.hasPrefix("arn:aws:") {
+            return clusterName
+        }
+        if clusterName.hasPrefix("arn:aws:") {
+            if let last = clusterName.split(separator: "/").last {
+                return String(last)
+            }
+        }
+        if name.hasPrefix("gke_") {
+            let parts = name.split(separator: "_")
+            if let last = parts.last {
+                return String(last)
+            }
+        }
+        return name
+    }
+
+    /// Descriptive short subtitle containing region and account or provider info.
+    public var shortSubtitle: String {
+        let target = contextName.hasPrefix("arn:aws:eks:") ? contextName : clusterName
+        if target.hasPrefix("arn:aws:eks:") {
+            let parts = target.split(separator: ":")
+            if parts.count >= 6 {
+                let region = String(parts[3])
+                let account = String(parts[4])
+                return "AWS EKS • \(region) • \(account)"
+            }
+        }
+        if !clusterName.isEmpty && clusterName != contextName {
+            return clusterName
+        }
+        return providerType.label
+    }
+}

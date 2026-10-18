@@ -13,6 +13,11 @@ if [[ "$MODE" == "preview" ]]; then
 fi
 MIN_SYSTEM_VERSION="14.0"
 
+SWIFT_SANDBOX_FLAGS=()
+if [[ "${CTX_DISABLE_SWIFTPM_SANDBOX:-0}" == "1" ]]; then
+  SWIFT_SANDBOX_FLAGS+=(--disable-sandbox)
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
@@ -24,6 +29,9 @@ RESOURCES_DIR="$APP_CONTENTS/Resources"
 ICON_SVG="$ROOT_DIR/Resources/CTXIcon.svg"
 ICONSET_DIR="$DIST_DIR/CTX.iconset"
 ICON_FILE="$RESOURCES_DIR/CTX.icns"
+# iconutil validates the directory extension as well as its contents.
+# Keep the temporary directory hidden, but make sure it still ends in `.iconset`.
+ICON_WORK_DIR="$DIST_DIR/.CTX.tmp.iconset"
 
 cd "$ROOT_DIR"
 if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
@@ -35,11 +43,11 @@ killall "$APP_NAME" >/dev/null 2>&1 || true
 BUILD_CONFIG="debug"
 if [[ "$MODE" == "release" || "$MODE" == "preview" ]]; then
   BUILD_CONFIG="release"
-  swift run CTXCoreTests
+  swift run ${SWIFT_SANDBOX_FLAGS[@]+"${SWIFT_SANDBOX_FLAGS[@]}"} CTXCoreTests
 fi
 
-swift build -c "$BUILD_CONFIG" --product "$APP_NAME"
-BUILD_DIR="$(swift build -c "$BUILD_CONFIG" --show-bin-path)"
+swift build ${SWIFT_SANDBOX_FLAGS[@]+"${SWIFT_SANDBOX_FLAGS[@]}"} -c "$BUILD_CONFIG" --product "$APP_NAME"
+BUILD_DIR="$(swift build ${SWIFT_SANDBOX_FLAGS[@]+"${SWIFT_SANDBOX_FLAGS[@]}"} -c "$BUILD_CONFIG" --show-bin-path)"
 BUILD_BINARY="$BUILD_DIR/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
@@ -52,15 +60,33 @@ if [[ -d "$BUILD_DIR/${APP_NAME}_${APP_NAME}.bundle" ]]; then
 fi
 
 if [[ -f "$ICON_SVG" ]]; then
-  rm -rf "$ICONSET_DIR"
-  mkdir -p "$ICONSET_DIR"
+  rm -rf "$ICON_WORK_DIR"
+  mkdir -p "$ICON_WORK_DIR"
+  ICON_GENERATION_OK=1
   for size in 16 32 128 256 512; do
-    qlmanage -t -s "$size" -o "$ICONSET_DIR" "$ICON_SVG" >/dev/null 2>&1
-    mv "$ICONSET_DIR/CTXIcon.svg.png" "$ICONSET_DIR/icon_${size}x${size}.png"
-    qlmanage -t -s "$((size * 2))" -o "$ICONSET_DIR" "$ICON_SVG" >/dev/null 2>&1
-    mv "$ICONSET_DIR/CTXIcon.svg.png" "$ICONSET_DIR/icon_${size}x${size}@2x.png"
+    if ! qlmanage -t -s "$size" -o "$ICON_WORK_DIR" "$ICON_SVG" >/dev/null 2>&1; then
+      ICON_GENERATION_OK=0
+      break
+    fi
+    mv "$ICON_WORK_DIR/CTXIcon.svg.png" "$ICON_WORK_DIR/icon_${size}x${size}.png"
+    if ! qlmanage -t -s "$((size * 2))" -o "$ICON_WORK_DIR" "$ICON_SVG" >/dev/null 2>&1; then
+      ICON_GENERATION_OK=0
+      break
+    fi
+    mv "$ICON_WORK_DIR/CTXIcon.svg.png" "$ICON_WORK_DIR/icon_${size}x${size}@2x.png"
   done
-  iconutil -c icns "$ICONSET_DIR" -o "$ICON_FILE"
+  if [[ "$ICON_GENERATION_OK" == "1" ]] && iconutil -c icns "$ICON_WORK_DIR" -o "$ICON_FILE"; then
+    rm -rf "$ICONSET_DIR"
+    mv "$ICON_WORK_DIR" "$ICONSET_DIR"
+  else
+    rm -rf "$ICON_WORK_DIR"
+    echo "warning: app icon generation is unavailable; continuing without CTX.icns" >&2
+  fi
+fi
+
+ICON_PLIST_ENTRY=""
+if [[ -f "$ICON_FILE" ]]; then
+  ICON_PLIST_ENTRY=$'  <key>CFBundleIconFile</key>\n  <string>CTX</string>'
 fi
 
 cat >"$INFO_PLIST" <<PLIST
@@ -78,8 +104,7 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>
   <string>$APP_BUILD</string>
-  <key>CFBundleIconFile</key>
-  <string>CTX</string>
+$ICON_PLIST_ENTRY
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
@@ -93,9 +118,11 @@ cat >"$INFO_PLIST" <<PLIST
 PLIST
 
 codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null
+echo "App built and signed: $APP_BUNDLE"
 
 open_app() {
   killall "$APP_NAME" >/dev/null 2>&1 || true
+  local launch_bundle="$APP_BUNDLE"
   if [ -w /Applications ]; then
     rm -rf "/Applications/$APP_NAME.app"
     cp -R "$APP_BUNDLE" "/Applications/"
@@ -103,9 +130,13 @@ open_app() {
     # Launch Services indexes every .app under $HOME, so a staging bundle left in
     # dist/ shows up alongside the installed copy as a second, stale app.
     rm -rf "$APP_BUNDLE"
-    /usr/bin/open "/Applications/$APP_NAME.app"
+    launch_bundle="/Applications/$APP_NAME.app"
+  fi
+  if ! /usr/bin/open "$launch_bundle"; then
+    echo "warning: Launch Services could not open CTX; starting its executable directly" >&2
+    ("$launch_bundle/Contents/MacOS/$APP_NAME" >/dev/null 2>&1 &)
   else
-    /usr/bin/open "$APP_BUNDLE"
+    echo "App opened: $launch_bundle"
   fi
 }
 

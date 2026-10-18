@@ -9,18 +9,23 @@ public struct ClusterFinOpsEngine: Sendable {
         self.pricing = pricing
     }
 
-    /// Generates a comprehensive FinOps report from live cluster inventories and metrics.
+    /// Generates a modeled allocation report from current cluster inventory and any
+    /// current metrics supplied by the caller. Currency values are estimates unless
+    /// an external verified cost source is provided.
     public func analyze(
         pods: [KubernetesResourceRow],
         nodes: [KubernetesResourceRow],
         pvcs: [KubernetesResourceRow],
         workloads: [KubernetesResourceRow],
         telemetry: ClusterTelemetryMetrics? = nil,
-        window: FinOpsTimeWindow = .d7,
+        window: FinOpsTimeWindow = .h24,
+        customDays: Double? = nil,
         aggregation: FinOpsAggregation = .namespace,
         externalDataSource: FinOpsDataSourceStatus? = nil
     ) -> FinOpsReport {
-        let hoursInWindow = 24.0 * window.daysFactor
+        let activeDays: Double = (window == .custom && customDays != nil) ? max(0.1, customDays!) : window.daysFactor
+        let hoursInWindow = 24.0 * activeDays
+        let activeMonthlyMultiplier = 30.0 / activeDays
 
         // 1. Calculate Node Capacity and Cluster Baseline
         struct NodeCapacityInfo {
@@ -46,13 +51,13 @@ public struct ClusterFinOpsEngine: Sendable {
 
             let cpuUsedPct = parsePercent(node.cells["CPU Used"])
             let memUsedPct = parsePercent(node.cells["Memory Used"])
-            let instanceType = node.cells["Roles"] ?? node.cells["InstanceType"] ?? "Standard"
+            let instanceType = node.cells["InstanceType"] ?? KubernetesGitOpsService.unknownValue
 
             let info = NodeCapacityInfo(
                 id: node.id,
                 name: nodeName,
-                cores: max(2.0, cores),
-                memoryGiB: max(4.0, memGiB),
+                cores: max(0, cores),
+                memoryGiB: max(0, memGiB),
                 cpuUsedPercent: cpuUsedPct,
                 memUsedPercent: memUsedPct,
                 instanceType: instanceType
@@ -72,14 +77,6 @@ public struct ClusterFinOpsEngine: Sendable {
             totalClusterMemoryGiB = allocBytes / (1024.0 * 1024.0 * 1024.0)
         }
 
-        // Fallback default baseline if cluster has no nodes or telemetry registered yet
-        if totalClusterCores <= 0 {
-            totalClusterCores = 4.0
-        }
-        if totalClusterMemoryGiB <= 0 {
-            totalClusterMemoryGiB = 16.0
-        }
-
         // 2. Parse Pod Resource Allocations & Live Usages
         struct PodCostInfo {
             let name: String
@@ -90,7 +87,6 @@ public struct ClusterFinOpsEngine: Sendable {
             let usedCores: Double
             let requestedMemGiB: Double
             let usedMemGiB: Double
-            let isOverAllocated: Bool
             let hasLiveTelemetry: Bool
         }
 
@@ -102,7 +98,7 @@ public struct ClusterFinOpsEngine: Sendable {
             let ns = pod.namespace ?? pod.cells["Namespace"] ?? "default"
             let nodeName = pod.cells["Node"] ?? ""
             let rawOwner = pod.cells["Workload"] ?? pod.cells["Owner"] ?? ""
-            let workloadName = sanitizeWorkloadName(rawOwner.isEmpty ? pod.id : rawOwner)
+            let workloadName = rawOwner.isEmpty ? pod.id : rawOwner
 
             // CPU Request: prefer exact declared requests from metadata
             var reqCores: Double = 0
@@ -147,8 +143,6 @@ public struct ClusterFinOpsEngine: Sendable {
             totalAllocatedCores += reqCores
             totalAllocatedMemGiB += reqMemGiB
 
-            let isOverAllocated = hasLiveTelemetry && reqCores >= 0.25 && (usedCores / reqCores < 0.35)
-
             podInfos.append(PodCostInfo(
                 name: pod.id,
                 namespace: ns,
@@ -158,7 +152,6 @@ public struct ClusterFinOpsEngine: Sendable {
                 usedCores: usedCores,
                 requestedMemGiB: reqMemGiB,
                 usedMemGiB: usedMemGiB,
-                isOverAllocated: isOverAllocated,
                 hasLiveTelemetry: hasLiveTelemetry
             ))
         }
@@ -212,21 +205,34 @@ public struct ClusterFinOpsEngine: Sendable {
                 let cpuCost = groupReqCores * pricing.cpuHourlyPerCore * hoursInWindow
                 let memCost = groupReqMem * pricing.memoryHourlyPerGiB * hoursInWindow
                 let storageGiB = storageGiBByNamespace[ns] ?? 0
-                let storageCost = (storageGiB * pricing.storageMonthlyPerGB / 30.0) * window.daysFactor
+                let storageCost = (storageGiB * pricing.storageMonthlyPerGB / 30.0) * activeDays
 
-                let shareOfAllocation = totalAllocatedCores > 0 ? (groupReqCores / totalAllocatedCores) : 0
+                let groupAllocatedCost = cpuCost + memCost
+                let shareOfAllocation = allocatedWindowCost > 0 ? (groupAllocatedCost / allocatedWindowCost) : 0
                 let idleCost = totalIdleWindowCost * shareOfAllocation
                 let totalRowCost = cpuCost + memCost + storageCost + idleCost
 
                 let groupHasLive = members.contains(where: { $0.hasLiveTelemetry })
-                let cpuEff = (groupHasLive && groupReqCores > 0) ? min(1.0, groupUsedCores / groupReqCores) : 1.0
-                let memEff = (groupHasLive && groupReqMem > 0) ? min(1.0, groupUsedMem / groupReqMem) : 1.0
-                let eff = members.isEmpty ? 1.0 : (groupHasLive ? ((cpuEff * 0.6) + (memEff * 0.4)) : 1.0)
+                let cpuEff = (groupHasLive && groupReqCores > 0) ? min(1.0, groupUsedCores / groupReqCores) : 0
+                let memEff = (groupHasLive && groupReqMem > 0) ? min(1.0, groupUsedMem / groupReqMem) : 0
+                let measuredRequestCost = cpuCost + memCost
+                let measuredUsageCost = (groupUsedCores * pricing.cpuHourlyPerCore * hoursInWindow) +
+                    (groupUsedMem * pricing.memoryHourlyPerGiB * hoursInWindow)
+                let hasComparableUsage = groupHasLive && (measuredRequestCost > 0 || groupReqCores > 0 || groupReqMem > 0)
+                let eff: Double
+                if measuredRequestCost > 0 {
+                    eff = min(1.0, measuredUsageCost / measuredRequestCost)
+                } else if groupHasLive && (groupReqCores > 0 || groupReqMem > 0) {
+                    let c = (groupReqCores > 0 ? 1.0 : 0.0) + (groupReqMem > 0 ? 1.0 : 0.0)
+                    eff = c > 0 ? min(1.0, (cpuEff + memEff) / c) : 0
+                } else {
+                    eff = 0
+                }
 
                 let unutilizedCpuCost = groupHasLive ? max(0, cpuCost * (1.0 - cpuEff)) : 0
                 let unutilizedMemCost = groupHasLive ? max(0, memCost * (1.0 - memEff)) : 0
-                let rowWaste = unutilizedCpuCost + unutilizedMemCost + (idleCost * 0.25)
-                let monthlyRun = totalRowCost * window.monthlyMultiplier
+                let rowWaste = unutilizedCpuCost + unutilizedMemCost
+                let monthlyRun = totalRowCost * activeMonthlyMultiplier
 
                 totalSpendAccumulator += totalRowCost
                 totalWasteAccumulator += rowWaste
@@ -239,14 +245,20 @@ public struct ClusterFinOpsEngine: Sendable {
                         cpuCost: cpuCost,
                         memoryCost: memCost,
                         storageCost: storageCost,
-                        networkCost: totalRowCost * 0.03,
+                        networkCost: 0,
                         idleCost: idleCost,
                         totalCost: totalRowCost
                     ),
                     efficiencyScore: eff,
                     estimatedWasteUSD: rowWaste,
                     monthlyRunRateUSD: monthlyRun,
-                    resourceKind: "Namespace"
+                    resourceKind: "Namespace",
+                    hasLiveUsage: hasComparableUsage,
+                    cpuCoresRequested: groupReqCores,
+                    cpuCoresUsed: groupUsedCores,
+                    memoryGiBRequested: groupReqMem,
+                    memoryGiBUsed: groupUsedMem,
+                    storageGiB: storageGiB
                 ))
             }
 
@@ -269,19 +281,32 @@ public struct ClusterFinOpsEngine: Sendable {
 
                 let cpuCost = groupReqCores * pricing.cpuHourlyPerCore * hoursInWindow
                 let memCost = groupReqMem * pricing.memoryHourlyPerGiB * hoursInWindow
-                let shareOfAllocation = totalAllocatedCores > 0 ? (groupReqCores / totalAllocatedCores) : 0
+                let groupAllocatedCost = cpuCost + memCost
+                let shareOfAllocation = allocatedWindowCost > 0 ? (groupAllocatedCost / allocatedWindowCost) : 0
                 let idleCost = totalIdleWindowCost * shareOfAllocation
                 let totalRowCost = cpuCost + memCost + idleCost
 
                 let groupHasLive = members.contains(where: { $0.hasLiveTelemetry })
-                let cpuEff = (groupHasLive && groupReqCores > 0) ? min(1.0, groupUsedCores / groupReqCores) : 1.0
-                let memEff = (groupHasLive && groupReqMem > 0) ? min(1.0, groupUsedMem / groupReqMem) : 1.0
-                let eff = groupHasLive ? ((cpuEff * 0.6) + (memEff * 0.4)) : 1.0
+                let cpuEff = (groupHasLive && groupReqCores > 0) ? min(1.0, groupUsedCores / groupReqCores) : 0
+                let memEff = (groupHasLive && groupReqMem > 0) ? min(1.0, groupUsedMem / groupReqMem) : 0
+                let measuredRequestCost = cpuCost + memCost
+                let measuredUsageCost = (groupUsedCores * pricing.cpuHourlyPerCore * hoursInWindow) +
+                    (groupUsedMem * pricing.memoryHourlyPerGiB * hoursInWindow)
+                let hasComparableUsage = groupHasLive && (measuredRequestCost > 0 || groupReqCores > 0 || groupReqMem > 0)
+                let eff: Double
+                if measuredRequestCost > 0 {
+                    eff = min(1.0, measuredUsageCost / measuredRequestCost)
+                } else if groupHasLive && (groupReqCores > 0 || groupReqMem > 0) {
+                    let c = (groupReqCores > 0 ? 1.0 : 0.0) + (groupReqMem > 0 ? 1.0 : 0.0)
+                    eff = c > 0 ? min(1.0, (cpuEff + memEff) / c) : 0
+                } else {
+                    eff = 0
+                }
 
                 let unutilizedCpuCost = groupHasLive ? max(0, cpuCost * (1.0 - cpuEff)) : 0
                 let unutilizedMemCost = groupHasLive ? max(0, memCost * (1.0 - memEff)) : 0
-                let rowWaste = unutilizedCpuCost + unutilizedMemCost + (idleCost * 0.25)
-                let monthlyRun = totalRowCost * window.monthlyMultiplier
+                let rowWaste = unutilizedCpuCost + unutilizedMemCost
+                let monthlyRun = totalRowCost * activeMonthlyMultiplier
 
                 totalSpendAccumulator += totalRowCost
                 totalWasteAccumulator += rowWaste
@@ -294,14 +319,20 @@ public struct ClusterFinOpsEngine: Sendable {
                         cpuCost: cpuCost,
                         memoryCost: memCost,
                         storageCost: 0,
-                        networkCost: totalRowCost * 0.03,
+                        networkCost: 0,
                         idleCost: idleCost,
                         totalCost: totalRowCost
                     ),
                     efficiencyScore: eff,
                     estimatedWasteUSD: rowWaste,
                     monthlyRunRateUSD: monthlyRun,
-                    resourceKind: "Workload"
+                    resourceKind: "Workload",
+                    hasLiveUsage: hasComparableUsage,
+                    cpuCoresRequested: groupReqCores,
+                    cpuCoresUsed: groupUsedCores,
+                    memoryGiBRequested: groupReqMem,
+                    memoryGiBUsed: groupUsedMem,
+                    storageGiB: 0
                 ))
             }
 
@@ -310,15 +341,7 @@ public struct ClusterFinOpsEngine: Sendable {
             if !nodes.isEmpty {
                 for node in nodes {
                     let nodeName = node.cells["Name"] ?? node.id
-                    let info = nodeMap[node.id] ?? nodeMap[nodeName] ?? NodeCapacityInfo(
-                        id: node.id,
-                        name: nodeName,
-                        cores: 4.0,
-                        memoryGiB: 16.0,
-                        cpuUsedPercent: nil,
-                        memUsedPercent: nil,
-                        instanceType: "Node"
-                    )
+                    guard let info = nodeMap[node.id] ?? nodeMap[nodeName] else { continue }
 
                     // Match pods running on this node
                     let nodePods = podInfos.filter {
@@ -337,16 +360,29 @@ public struct ClusterFinOpsEngine: Sendable {
                     let totalRowCost = nodeTotalWindowCost
 
                     let eff: Double
+                    let hasComparableUsage: Bool
                     if let cpuPct = info.cpuUsedPercent, let memPct = info.memUsedPercent {
-                        eff = (cpuPct * 0.6) + (memPct * 0.4)
-                    } else if info.cores > 0 {
-                        eff = min(1.0, max(0.15, (nodeReqCores / info.cores) * 0.75))
+                        let cpuCapacityCost = info.cores * pricing.cpuHourlyPerCore
+                        let memoryCapacityCost = info.memoryGiB * pricing.memoryHourlyPerGiB
+                        let capacityCost = cpuCapacityCost + memoryCapacityCost
+                        if capacityCost > 0 {
+                            hasComparableUsage = true
+                            eff = ((cpuPct * cpuCapacityCost) + (memPct * memoryCapacityCost)) / capacityCost
+                        } else if info.cores > 0 || info.memoryGiB > 0 {
+                            hasComparableUsage = true
+                            let c = (info.cores > 0 ? 1.0 : 0.0) + (info.memoryGiB > 0 ? 1.0 : 0.0)
+                            eff = c > 0 ? min(1.0, (cpuPct + memPct) / c) : 0
+                        } else {
+                            hasComparableUsage = false
+                            eff = 0
+                        }
                     } else {
-                        eff = 0.50
+                        hasComparableUsage = false
+                        eff = 0
                     }
 
-                    let rowWaste = idleCost + (cpuCost * max(0, 1.0 - eff))
-                    let monthlyRun = totalRowCost * window.monthlyMultiplier
+                    let rowWaste = hasComparableUsage ? nodeTotalWindowCost * max(0, 1.0 - eff) : 0
+                    let monthlyRun = totalRowCost * activeMonthlyMultiplier
 
                     totalSpendAccumulator += totalRowCost
                     totalWasteAccumulator += rowWaste
@@ -359,14 +395,20 @@ public struct ClusterFinOpsEngine: Sendable {
                             cpuCost: cpuCost,
                             memoryCost: memCost,
                             storageCost: 0,
-                            networkCost: totalRowCost * 0.02,
+                            networkCost: 0,
                             idleCost: idleCost,
                             totalCost: totalRowCost
                         ),
                         efficiencyScore: eff,
                         estimatedWasteUSD: rowWaste,
                         monthlyRunRateUSD: monthlyRun,
-                        resourceKind: "Node"
+                        resourceKind: "Node",
+                        hasLiveUsage: hasComparableUsage,
+                        cpuCoresRequested: nodeReqCores,
+                        cpuCoresUsed: (info.cpuUsedPercent ?? 0) * info.cores,
+                        memoryGiBRequested: nodeReqMem,
+                        memoryGiBUsed: (info.memUsedPercent ?? 0) * info.memoryGiB,
+                        storageGiB: 0
                     ))
                 }
             } else {
@@ -381,11 +423,25 @@ public struct ClusterFinOpsEngine: Sendable {
                     let groupReqMem = members.reduce(0.0) { $0 + $1.requestedMemGiB }
                     let cpuCost = groupReqCores * pricing.cpuHourlyPerCore * hoursInWindow
                     let memCost = groupReqMem * pricing.memoryHourlyPerGiB * hoursInWindow
-                    let idleCost = (cpuCost + memCost) * 0.4
-                    let totalRowCost = cpuCost + memCost + idleCost
-                    let eff = 0.48
-                    let rowWaste = idleCost + ((cpuCost + memCost) * 0.3)
-                    let monthlyRun = totalRowCost * window.monthlyMultiplier
+                    let totalRowCost = cpuCost + memCost
+                    let groupUsedCores = members.reduce(0.0) { $0 + $1.usedCores }
+                    let groupUsedMem = members.reduce(0.0) { $0 + $1.usedMemGiB }
+                    let measuredUsageCost = (groupUsedCores * pricing.cpuHourlyPerCore * hoursInWindow) +
+                        (groupUsedMem * pricing.memoryHourlyPerGiB * hoursInWindow)
+                    let hasComparableUsage = members.contains(where: { $0.hasLiveTelemetry }) && (totalRowCost > 0 || groupReqCores > 0 || groupReqMem > 0)
+                    let eff: Double
+                    if totalRowCost > 0 {
+                        eff = min(1.0, measuredUsageCost / totalRowCost)
+                    } else if hasComparableUsage && (groupReqCores > 0 || groupReqMem > 0) {
+                        let cpuR = groupReqCores > 0 ? (groupUsedCores / groupReqCores) : 0
+                        let memR = groupReqMem > 0 ? (groupUsedMem / groupReqMem) : 0
+                        let c = (groupReqCores > 0 ? 1.0 : 0.0) + (groupReqMem > 0 ? 1.0 : 0.0)
+                        eff = c > 0 ? min(1.0, (cpuR + memR) / c) : 0
+                    } else {
+                        eff = 0
+                    }
+                    let rowWaste = hasComparableUsage ? max(0, totalRowCost - measuredUsageCost) : 0
+                    let monthlyRun = totalRowCost * activeMonthlyMultiplier
 
                     totalSpendAccumulator += totalRowCost
                     totalWasteAccumulator += rowWaste
@@ -393,131 +449,53 @@ public struct ClusterFinOpsEngine: Sendable {
                     allocationRows.append(FinOpsAllocationRow(
                         id: nodeName,
                         name: nodeName,
-                        namespace: "Node Pool",
+                        namespace: nil,
                         breakdown: FinOpsCostBreakdown(
                             cpuCost: cpuCost,
                             memoryCost: memCost,
                             storageCost: 0,
-                            networkCost: totalRowCost * 0.02,
-                            idleCost: idleCost,
+                            networkCost: 0,
+                            idleCost: 0,
                             totalCost: totalRowCost
                         ),
                         efficiencyScore: eff,
                         estimatedWasteUSD: rowWaste,
                         monthlyRunRateUSD: monthlyRun,
-                        resourceKind: "Node"
+                        resourceKind: "Node (pod assignment)",
+                        hasLiveUsage: hasComparableUsage,
+                        cpuCoresRequested: groupReqCores,
+                        cpuCoresUsed: groupUsedCores,
+                        memoryGiBRequested: groupReqMem,
+                        memoryGiBUsed: groupUsedMem,
+                        storageGiB: 0
                     ))
                 }
             }
         }
 
-        // Sort rows by spend descending
-        allocationRows.sort { $0.breakdown.totalCost > $1.breakdown.totalCost }
+        // Sort rows by spend descending (or by requested cores if unpriced)
+        allocationRows.sort {
+            if $0.breakdown.totalCost != $1.breakdown.totalCost {
+                return $0.breakdown.totalCost > $1.breakdown.totalCost
+            }
+            return $0.cpuCoresRequested > $1.cpuCoresRequested
+        }
 
         // If spend accumulator was 0, fall back to calculated cluster node baseline
         if totalSpendAccumulator <= 0 {
             totalSpendAccumulator = clusterWindowNodeCost
         }
 
-        // 6. Actionable Right-Sizing Recommendations
-        var recommendations: [FinOpsRecommendation] = []
+        // A single current metrics sample cannot support a safe right-sizing change.
+        // Recommendations stay empty until a verified historical source is integrated.
+        let recommendations: [FinOpsRecommendation] = []
 
-        // Inspect pods/workloads for over-provisioning
-        var workloadSummaries: [String: (ns: String, name: String, reqCores: Double, usedCores: Double, reqMem: Double, usedMem: Double, hasLive: Bool)] = [:]
-        for pod in podInfos {
-            let key = "\(pod.namespace)/\(pod.workload)"
-            let cur = workloadSummaries[key] ?? (ns: pod.namespace, name: pod.workload, reqCores: 0, usedCores: 0, reqMem: 0, usedMem: 0, hasLive: false)
-            workloadSummaries[key] = (
-                ns: pod.namespace,
-                name: pod.workload,
-                reqCores: cur.reqCores + pod.requestedCores,
-                usedCores: cur.usedCores + pod.usedCores,
-                reqMem: cur.reqMem + pod.requestedMemGiB,
-                usedMem: cur.usedMem + pod.usedMemGiB,
-                hasLive: cur.hasLive || pod.hasLiveTelemetry
-            )
-        }
-
-        for (_, w) in workloadSummaries {
-            // STRICT AUTHENTICITY: Only recommend downsizing when we have VERIFIED live telemetry!
-            guard w.hasLive, w.usedCores > 0, w.reqCores >= 0.25 else { continue }
-            let cpuRatio = w.usedCores / w.reqCores
-            if cpuRatio < 0.45 {
-                let suggestedCores = max(0.1, round((w.usedCores * 1.35) * 100) / 100)
-                let coreSavings = max(0, w.reqCores - suggestedCores)
-                let monthlySavings = coreSavings * pricing.cpuHourlyPerCore * 730.0
-
-                if monthlySavings >= 5.0 {
-                    let patch = """
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: \(w.name)
-  namespace: \(w.ns)
-spec:
-  template:
-    spec:
-      containers:
-        - name: \(w.name)
-          resources:
-            requests:
-              cpu: "\(Int(suggestedCores * 1000))m"
-              memory: "\(max(128, Int(w.usedMem * 1.35 * 1024)))Mi"
-            limits:
-              cpu: "\(Int(suggestedCores * 2.0 * 1000))m"
-              memory: "\(max(256, Int(w.usedMem * 2.0 * 1024)))Mi"
-"""
-                    recommendations.append(FinOpsRecommendation(
-                        title: w.name,
-                        subtitle: "\(Int(cpuRatio * 100))% CPU utilization (\(String(format: "%.2f", w.usedCores))/\(String(format: "%.2f", w.reqCores)) cores)",
-                        targetResource: w.name,
-                        namespace: w.ns,
-                        monthlySavingsUSD: monthlySavings,
-                        severity: monthlySavings > 50 ? .critical : (monthlySavings > 20 ? .warning : .info),
-                        currentAllocation: "\(String(format: "%.2f", w.reqCores)) cores",
-                        suggestedAllocation: "\(String(format: "%.2f", suggestedCores)) cores (+35% headroom)",
-                        yamlPatchSnippet: patch,
-                        confidence: w.hasLive ? "High · Live Metrics" : "Estimated Baseline",
-                        safetyHeadroom: "+35% Headroom · Limits Retained at 2x",
-                        verificationCommand: "kubectl top pod -n \(w.ns) -l app=\(w.name)",
-                        dryRunCommand: "kubectl apply --dry-run=server -f patch-\(w.name).yaml",
-                        riskLevel: "Low Risk · Preserves burst capacity"
-                    ))
-                }
-            }
-        }
-
-        // Add PVC optimization recommendations
-        for pvc in pvcs {
-            let status = pvc.cells["Status"] ?? ""
-            if status.lowercased() != "bound" && !pvc.id.isEmpty {
-                let ns = pvc.namespace ?? pvc.cells["Namespace"] ?? "default"
-                recommendations.append(FinOpsRecommendation(
-                    title: "Unbound PVC: \(pvc.id) (\(ns))",
-                    subtitle: "PersistentVolumeClaim is pending and unattached, accumulating storage reservation costs.",
-                    targetResource: pvc.id,
-                    namespace: ns,
-                    monthlySavingsUSD: 9.60,
-                    severity: .warning,
-                    currentAllocation: "Unbound Volume",
-                    suggestedAllocation: "Delete or rebind claim",
-                    yamlPatchSnippet: "kubectl delete pvc \(pvc.id) -n \(ns)"
-                ))
-            }
-        }
-
-        // Sort recommendations by monthly savings descending
-        recommendations.sort { $0.monthlySavingsUSD > $1.monthlySavingsUSD }
-
-        // 7. Time Series Generation for Visual Trends
-        let timeSeries = generateTimeSeries(
-            totalWindowSpend: totalSpendAccumulator,
-            days: Int(window.daysFactor),
-            topRows: Array(allocationRows.prefix(4))
-        )
+        // A current resource snapshot is not historical billing data. CTX leaves the
+        // series empty until a real time-series source (OpenCost/Kubecost) supplies it.
+        let timeSeries: [FinOpsTimeSeriesPoint] = []
 
         // 8. Overall Summary
-        let totalMonthlyRunRate = totalSpendAccumulator * window.monthlyMultiplier
+        let totalMonthlyRunRate = totalSpendAccumulator * activeMonthlyMultiplier
         let potentialMonthlySavings = recommendations.reduce(0.0) { $0 + $1.monthlySavingsUSD }
 
         let totalUsedCores = podInfos.reduce(0.0) { $0 + $1.usedCores }
@@ -527,13 +505,25 @@ spec:
         let totalStorageCost = allocationRows.reduce(0.0) { $0 + $1.breakdown.storageCost }
         let totalIdleCost = allocationRows.reduce(0.0) { $0 + $1.breakdown.idleCost }
 
+        let measuredRequestCost = (totalAllocatedCores * pricing.cpuHourlyPerCore * hoursInWindow) +
+            (totalAllocatedMemGiB * pricing.memoryHourlyPerGiB * hoursInWindow)
+        let measuredUsageCost = (totalUsedCores * pricing.cpuHourlyPerCore * hoursInWindow) +
+            (totalUsedMemGiB * pricing.memoryHourlyPerGiB * hoursInWindow)
         let hasAnyLiveTelemetry = podInfos.contains(where: { $0.hasLiveTelemetry })
         let overallEfficiency: Double
         if hasAnyLiveTelemetry {
-            overallEfficiency = totalSpendAccumulator > 0 ? max(0.15, min(1.0, 1.0 - (totalWasteAccumulator / max(1.0, totalSpendAccumulator)))) : 1.0
+            if measuredRequestCost > 0 {
+                overallEfficiency = min(1.0, measuredUsageCost / measuredRequestCost)
+            } else if totalAllocatedCores > 0 || totalAllocatedMemGiB > 0 {
+                let cpuRatio = totalAllocatedCores > 0 ? (totalUsedCores / totalAllocatedCores) : 0
+                let memRatio = totalAllocatedMemGiB > 0 ? (totalUsedMemGiB / totalAllocatedMemGiB) : 0
+                let count = (totalAllocatedCores > 0 ? 1.0 : 0.0) + (totalAllocatedMemGiB > 0 ? 1.0 : 0.0)
+                overallEfficiency = count > 0 ? min(1.0, (cpuRatio + memRatio) / count) : 0
+            } else {
+                overallEfficiency = 0
+            }
         } else {
-            // Unmetered cluster: efficiency is strictly the ratio of committed requests to physical node capacity
-            overallEfficiency = totalSpendAccumulator > 0 ? max(0.60, min(1.0, 1.0 - (totalIdleCost / max(1.0, totalSpendAccumulator) * 0.5))) : 1.0
+            overallEfficiency = 0
         }
 
         let summary = FinOpsSummary(
@@ -569,56 +559,6 @@ spec:
     }
 
     // MARK: - Private Helpers
-
-    private func generateTimeSeries(totalWindowSpend: Double, days: Int, topRows: [FinOpsAllocationRow]) -> [FinOpsTimeSeriesPoint] {
-        let count = max(2, min(days, 30))
-        let now = Date()
-        let calendar = Calendar.current
-        var points: [FinOpsTimeSeriesPoint] = []
-
-        // In Kubernetes FinOps without long-term Prometheus storage, each day reflects
-        // the calculated daily run rate of the active cluster allocation.
-        let dailySpend = totalWindowSpend / Double(count)
-
-        for i in (0..<count).reversed() {
-            guard let date = calendar.date(byAdding: .day, value: -i, to: now) else { continue }
-
-            let formatter = DateFormatter()
-            formatter.dateFormat = count <= 7 ? "EEE" : "MMM d"
-            let label = formatter.string(from: date)
-
-            var breakdown: [String: Double] = [:]
-            for row in topRows {
-                let share = row.breakdown.totalCost / max(0.01, totalWindowSpend)
-                breakdown[row.name] = dailySpend * share
-            }
-
-            points.append(FinOpsTimeSeriesPoint(
-                date: date,
-                label: label,
-                totalCost: dailySpend,
-                costByCategory: breakdown
-            ))
-        }
-        return points
-    }
-
-    private func sanitizeWorkloadName(_ raw: String) -> String {
-        let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = clean.components(separatedBy: "-")
-        if parts.count >= 3 {
-            let last = parts.last ?? ""
-            let secondLast = parts[parts.count - 2]
-            if (last.count == 5 || last.count == 6) && (secondLast.count >= 8 || secondLast.allSatisfy(\.isNumber)) {
-                return parts.dropLast(2).joined(separator: "-")
-            } else if last.count >= 5 && last.count <= 10 {
-                return parts.dropLast().joined(separator: "-")
-            }
-        }
-        return clean
-    }
-
-
 
     private func parsePercent(_ raw: String?) -> Double? {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }

@@ -15,6 +15,38 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Header Bar: window controls headroom + New Profile / Folder button
+            HStack(spacing: 8) {
+                Spacer()
+
+                Menu {
+                    Button {
+                        openNewProfile()
+                    } label: {
+                        Label("New Profile", systemImage: "plus")
+                    }
+
+                    Button {
+                        store.presentFolderEditor(.add, from: .mainWindow)
+                    } label: {
+                        Label("New Folder", systemImage: "folder")
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
+                .help("Create Profile or Folder")
+            }
+            .padding(.leading, 72)
+            .padding(.trailing, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+
             // Custom Search Bar (No Blue Focus Ring!)
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
@@ -42,7 +74,7 @@ struct SidebarView: View {
             .padding(.vertical, 4)
             .ctxGlassCard(cornerRadius: 6)
             .padding(.horizontal, 12)
-            .padding(.top, 10)
+            .padding(.top, 4)
             .padding(.bottom, 6)
 
             List(selection: $store.selectedSelection) {
@@ -132,28 +164,6 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-        }
-        .navigationTitle("Profiles")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button {
-                        openNewProfile()
-                    } label: {
-                        Label("New Profile", systemImage: "plus")
-                    }
-
-                    Button {
-                        store.presentFolderEditor(.add, from: .mainWindow)
-                    } label: {
-                        Label("New Folder", systemImage: "folder")
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .menuIndicator(.hidden)
-                .help("Create Profile or Folder")
-            }
         }
         .deleteProfileAlert(store: store, candidate: $deleteCandidate)
         .onChange(of: store.selectedSelection) { _, newValue in

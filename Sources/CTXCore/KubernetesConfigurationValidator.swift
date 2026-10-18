@@ -97,7 +97,7 @@ public struct KubernetesConfigurationValidator: Sendable {
         for ing in ingress {
             let ns = ing.namespace ?? "default"
             let svcNamesStr = ing.cells["Services"] ?? ""
-            let referencedSvcs = svcNamesStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            let referencedSvcs = Array(Set(svcNamesStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })).sorted()
             let nsServices = Set((servicesByNamespace[ns] ?? []).map(\.name))
 
             if !nsServices.isEmpty {
@@ -128,7 +128,7 @@ public struct KubernetesConfigurationValidator: Sendable {
             if let cmStr = pod.cells["ConfigMaps"], !cmStr.isEmpty {
                 let nsCMs = Set((configMapsByNamespace[ns] ?? []).map(\.name))
                 if !nsCMs.isEmpty {
-                    let cms = cmStr.split(separator: ",").map(String.init)
+                    let cms = Array(Set(cmStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })).sorted()
                     for cm in cms where !nsCMs.contains(cm) {
                         addIssue(ResourceDiagnosticIssue(
                             resourceID: pod.id,
@@ -150,7 +150,7 @@ public struct KubernetesConfigurationValidator: Sendable {
             if let secStr = pod.cells["Secrets"], !secStr.isEmpty {
                 let nsSecs = Set((secretsByNamespace[ns] ?? []).map(\.name))
                 if !nsSecs.isEmpty {
-                    let secs = secStr.split(separator: ",").map(String.init)
+                    let secs = Array(Set(secStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })).sorted()
                     for sec in secs where !nsSecs.contains(sec) {
                         addIssue(ResourceDiagnosticIssue(
                             resourceID: pod.id,
@@ -172,7 +172,7 @@ public struct KubernetesConfigurationValidator: Sendable {
             if let pvcStr = pod.cells["PVCs"], !pvcStr.isEmpty {
                 let nsPVCs = Set((pvcsByNamespace[ns] ?? []).map(\.name))
                 if !nsPVCs.isEmpty {
-                    let claims = pvcStr.split(separator: ",").map(String.init)
+                    let claims = Array(Set(pvcStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })).sorted()
                     for claim in claims where !nsPVCs.contains(claim) {
                         addIssue(ResourceDiagnosticIssue(
                             resourceID: pod.id,
@@ -190,82 +190,8 @@ public struct KubernetesConfigurationValidator: Sendable {
                 }
             }
 
-            // Security checks
-            let secFlags = Set((pod.cells["Security"] ?? "").split(separator: ",").map(String.init))
-            if secFlags.contains("privileged") {
-                addIssue(ResourceDiagnosticIssue(
-                    resourceID: pod.id,
-                    resourceName: pod.name,
-                    resourceNamespace: pod.namespace,
-                    resourceKind: .pods,
-                    severity: .warning,
-                    category: .security,
-                    ruleId: "SECURITY_PRIVILEGED",
-                    title: "Privileged Container",
-                    message: "Pod runs in privileged mode, granting unrestricted root capabilities on the host.",
-                    recommendation: "Disable privileged mode and grant only the specific Linux capabilities needed."
-                ))
-            }
-            if secFlags.contains("runAsRoot") {
-                addIssue(ResourceDiagnosticIssue(
-                    resourceID: pod.id,
-                    resourceName: pod.name,
-                    resourceNamespace: pod.namespace,
-                    resourceKind: .pods,
-                    severity: .warning,
-                    category: .security,
-                    ruleId: "SECURITY_RUN_AS_ROOT",
-                    title: "Running as Root",
-                    message: "Container allows root user execution without runAsNonRoot enforcement.",
-                    recommendation: "Set securityContext.runAsNonRoot: true and specify a non-zero runAsUser."
-                ))
-            }
-            if secFlags.contains("hostNetwork") || secFlags.contains("hostPID") {
-                addIssue(ResourceDiagnosticIssue(
-                    resourceID: pod.id,
-                    resourceName: pod.name,
-                    resourceNamespace: pod.namespace,
-                    resourceKind: .pods,
-                    severity: .warning,
-                    category: .security,
-                    ruleId: "SECURITY_HOST_NAMESPACE",
-                    title: "Host Namespace Shared",
-                    message: "Pod shares host network or PID namespace with the node.",
-                    recommendation: "Avoid hostNetwork and hostPID in application pods."
-                ))
-            }
-
-            // Reliability: Memory limits
-            if pod.cells["HasLimits"] == "false" {
-                addIssue(ResourceDiagnosticIssue(
-                    resourceID: pod.id,
-                    resourceName: pod.name,
-                    resourceNamespace: pod.namespace,
-                    resourceKind: .pods,
-                    severity: .warning,
-                    category: .reliability,
-                    ruleId: "RELIABILITY_NO_LIMITS",
-                    title: "Missing Memory Limits",
-                    message: "Pod has no memory limits configured, risking node memory exhaustion and OOM kills.",
-                    recommendation: "Define resources.limits.memory for all containers."
-                ))
-            }
-
-            // Reliability: Probes
-            let probeFlags = Set((pod.cells["Probes"] ?? "").split(separator: ",").map(String.init))
-            if !probeFlags.contains("liveness") || !probeFlags.contains("readiness") {
-                addIssue(ResourceDiagnosticIssue(
-                    resourceID: pod.id,
-                    resourceName: pod.name,
-                    resourceNamespace: pod.namespace,
-                    resourceKind: .pods,
-                    severity: .info,
-                    category: .reliability,
-                    ruleId: "RELIABILITY_MISSING_PROBES",
-                    title: "Missing Health Probes",
-                    message: "Pod is missing liveness or readiness probes.",
-                    recommendation: "Configure livenessProbe and readinessProbe for automatic recovery and safe rollouts."
-                ))
+            for issue in securityAndReliabilityIssues(row: pod, kind: .pods, subject: .pod) {
+                addIssue(issue)
             }
 
             // Runtime: CrashLoop / Failures / Restarts
@@ -329,7 +255,7 @@ public struct KubernetesConfigurationValidator: Sendable {
             if let cmStr = wl.cells["ConfigMaps"], !cmStr.isEmpty {
                 let nsCMs = Set((configMapsByNamespace[ns] ?? []).map(\.name))
                 if !nsCMs.isEmpty {
-                    for cm in cmStr.split(separator: ",").map(String.init) where !nsCMs.contains(cm) {
+                    for cm in Array(Set(cmStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })).sorted() where !nsCMs.contains(cm) {
                         addIssue(ResourceDiagnosticIssue(
                             resourceID: wl.id,
                             resourceName: wl.name,
@@ -349,7 +275,7 @@ public struct KubernetesConfigurationValidator: Sendable {
             if let secStr = wl.cells["Secrets"], !secStr.isEmpty {
                 let nsSecs = Set((secretsByNamespace[ns] ?? []).map(\.name))
                 if !nsSecs.isEmpty {
-                    for sec in secStr.split(separator: ",").map(String.init) where !nsSecs.contains(sec) {
+                    for sec in Array(Set(secStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })).sorted() where !nsSecs.contains(sec) {
                         addIssue(ResourceDiagnosticIssue(
                             resourceID: wl.id,
                             resourceName: wl.name,
@@ -366,68 +292,8 @@ public struct KubernetesConfigurationValidator: Sendable {
                 }
             }
 
-            // Workload Security checks
-            let secFlags = Set((wl.cells["Security"] ?? "").split(separator: ",").map(String.init))
-            if secFlags.contains("privileged") {
-                addIssue(ResourceDiagnosticIssue(
-                    resourceID: wl.id,
-                    resourceName: wl.name,
-                    resourceNamespace: wl.namespace,
-                    resourceKind: .workloads,
-                    severity: .warning,
-                    category: .security,
-                    ruleId: "SECURITY_PRIVILEGED",
-                    title: "Privileged Container Template",
-                    message: "Workload pod template runs in privileged mode.",
-                    recommendation: "Disable privileged mode and grant only the specific Linux capabilities needed."
-                ))
-            }
-            if secFlags.contains("runAsRoot") {
-                addIssue(ResourceDiagnosticIssue(
-                    resourceID: wl.id,
-                    resourceName: wl.name,
-                    resourceNamespace: wl.namespace,
-                    resourceKind: .workloads,
-                    severity: .warning,
-                    category: .security,
-                    ruleId: "SECURITY_RUN_AS_ROOT",
-                    title: "Running as Root Template",
-                    message: "Workload allows root user execution without runAsNonRoot enforcement.",
-                    recommendation: "Set securityContext.runAsNonRoot: true and specify a non-zero runAsUser."
-                ))
-            }
-
-            // Workload Reliability: Memory limits
-            if wl.cells["HasLimits"] == "false" {
-                addIssue(ResourceDiagnosticIssue(
-                    resourceID: wl.id,
-                    resourceName: wl.name,
-                    resourceNamespace: wl.namespace,
-                    resourceKind: .workloads,
-                    severity: .warning,
-                    category: .reliability,
-                    ruleId: "RELIABILITY_NO_LIMITS",
-                    title: "Missing Memory Limits",
-                    message: "Workload has no memory limits configured, risking node memory exhaustion and OOM kills.",
-                    recommendation: "Define resources.limits.memory for all containers."
-                ))
-            }
-
-            // Workload Reliability: Probes
-            let probeFlags = Set((wl.cells["Probes"] ?? "").split(separator: ",").map(String.init))
-            if !probeFlags.contains("liveness") || !probeFlags.contains("readiness") {
-                addIssue(ResourceDiagnosticIssue(
-                    resourceID: wl.id,
-                    resourceName: wl.name,
-                    resourceNamespace: wl.namespace,
-                    resourceKind: .workloads,
-                    severity: .info,
-                    category: .reliability,
-                    ruleId: "RELIABILITY_MISSING_PROBES",
-                    title: "Missing Health Probes",
-                    message: "Workload pod template is missing liveness or readiness probes.",
-                    recommendation: "Configure livenessProbe and readinessProbe for automatic recovery and safe rollouts."
-                ))
+            for issue in securityAndReliabilityIssues(row: wl, kind: .workloads, subject: .workloadTemplate) {
+                addIssue(issue)
             }
         }
 
@@ -481,6 +347,98 @@ public struct KubernetesConfigurationValidator: Sendable {
             warningCount: warnings,
             infoCount: infos
         )
+    }
+
+    /// Security and reliability checks shared by pods and workload pod templates.
+    /// Both read the same `Security` / `HasLimits` / `Probes` cells that
+    /// `KubernetesResourceParser` already produces for either kind, so a rule
+    /// added here applies to both without being written twice — which is also
+    /// what fixes `SECURITY_HOST_NAMESPACE` previously firing for pods only.
+    private static func securityAndReliabilityIssues(
+        row: KubernetesResourceRow,
+        kind: KubernetesResourceKind,
+        subject: DiagnosticSubject
+    ) -> [ResourceDiagnosticIssue] {
+        var issues: [ResourceDiagnosticIssue] = []
+        func add(severity: DiagnosticSeverity, category: DiagnosticCategory, ruleId: String, title: String, message: String, recommendation: String) {
+            issues.append(ResourceDiagnosticIssue(
+                resourceID: row.id,
+                resourceName: row.name,
+                resourceNamespace: row.namespace,
+                resourceKind: kind,
+                severity: severity,
+                category: category,
+                ruleId: ruleId,
+                title: title,
+                message: message,
+                recommendation: recommendation
+            ))
+        }
+
+        let secFlags = Set((row.cells["Security"] ?? "").split(separator: ",").map(String.init))
+        if secFlags.contains("privileged") {
+            add(severity: .warning, category: .security, ruleId: "SECURITY_PRIVILEGED",
+                title: subject.privilegedTitle, message: subject.privilegedMessage,
+                recommendation: "Disable privileged mode and grant only the specific Linux capabilities needed.")
+        }
+        if secFlags.contains("runAsRoot") {
+            add(severity: .warning, category: .security, ruleId: "SECURITY_RUN_AS_ROOT",
+                title: subject.runAsRootTitle, message: subject.runAsRootMessage,
+                recommendation: "Set securityContext.runAsNonRoot: true and specify a non-zero runAsUser.")
+        }
+        if secFlags.contains("hostNetwork") || secFlags.contains("hostPID") {
+            add(severity: .warning, category: .security, ruleId: "SECURITY_HOST_NAMESPACE",
+                title: subject.hostNamespaceTitle, message: subject.hostNamespaceMessage,
+                recommendation: "Avoid hostNetwork and hostPID in application pods.")
+        }
+        if row.cells["HasLimits"] == "false" {
+            add(severity: .warning, category: .reliability, ruleId: "RELIABILITY_NO_LIMITS",
+                title: "Missing Memory Limits", message: subject.limitsMessage,
+                recommendation: "Define resources.limits.memory for all containers.")
+        }
+        let probeFlags = Set((row.cells["Probes"] ?? "").split(separator: ",").map(String.init))
+        if !probeFlags.contains("liveness") || !probeFlags.contains("readiness") {
+            add(severity: .info, category: .reliability, ruleId: "RELIABILITY_MISSING_PROBES",
+                title: "Missing Health Probes", message: subject.probesMessage,
+                recommendation: "Configure livenessProbe and readinessProbe for automatic recovery and safe rollouts.")
+        }
+        return issues
+    }
+
+    /// Distinguishes pod-specific wording from workload-template wording for the
+    /// rules in `securityAndReliabilityIssues`, without duplicating the rules themselves.
+    private enum DiagnosticSubject: Equatable {
+        case pod
+        case workloadTemplate
+
+        var privilegedTitle: String { self == .pod ? "Privileged Container" : "Privileged Container Template" }
+        var privilegedMessage: String {
+            self == .pod
+                ? "Pod runs in privileged mode, granting unrestricted root capabilities on the host."
+                : "Workload pod template runs in privileged mode."
+        }
+        var runAsRootTitle: String { self == .pod ? "Running as Root" : "Running as Root Template" }
+        var runAsRootMessage: String {
+            self == .pod
+                ? "Container allows root user execution without runAsNonRoot enforcement."
+                : "Workload allows root user execution without runAsNonRoot enforcement."
+        }
+        var hostNamespaceTitle: String { self == .pod ? "Host Namespace Shared" : "Host Namespace Shared in Template" }
+        var hostNamespaceMessage: String {
+            self == .pod
+                ? "Pod shares host network or PID namespace with the node."
+                : "Workload pod template shares host network or PID namespace with the node."
+        }
+        var limitsMessage: String {
+            self == .pod
+                ? "Pod has no memory limits configured, risking node memory exhaustion and OOM kills."
+                : "Workload has no memory limits configured, risking node memory exhaustion and OOM kills."
+        }
+        var probesMessage: String {
+            self == .pod
+                ? "Pod is missing liveness or readiness probes."
+                : "Workload pod template is missing liveness or readiness probes."
+        }
     }
 
     private static func parsePairs(_ str: String) -> [String: String] {

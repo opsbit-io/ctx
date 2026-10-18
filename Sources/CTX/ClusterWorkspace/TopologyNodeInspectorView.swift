@@ -49,8 +49,18 @@ struct TopologyNodeInspectorView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 10) {
-            KubernetesIconView(nodeKind: node.effectiveKind, size: 20)
+        let brand = CTXBrandIconResolver.resolve(for: node.name + " " + node.subtitle)
+        return HStack(alignment: .top, spacing: 10) {
+            if let asset = brand.svgAsset {
+                CTXBrandSVGIcon(
+                    assetName: asset,
+                    size: 20,
+                    fallbackSystemImage: brand.fallbackSymbol,
+                    fallbackTint: brand.fallbackTint
+                )
+            } else {
+                KubernetesIconView(nodeKind: node.effectiveKind, size: 20)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(node.name)
                     .font(.system(.caption, weight: .bold))

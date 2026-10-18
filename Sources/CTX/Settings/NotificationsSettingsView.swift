@@ -97,7 +97,8 @@ struct NotificationsSettingsView: View {
                     HStack(spacing: 12) {
                         Button {
                             AppNotificationService.shared.requestAuthorizationIfAvailable()
-                            let cluster = store.activeProfile(for: .kubernetes)?.name ?? (store.activeKubeContext.isEmpty ? "demo-cluster" : store.activeKubeContext)
+                            let cluster = store.activeProfile(for: .kubernetes)?.name
+                                ?? (store.activeKubeContext.isEmpty ? "CTX test" : store.activeKubeContext)
                             AppNotificationService.shared.sendTestNotification(clusterName: cluster)
                             testSent = true
                             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {

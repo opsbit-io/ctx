@@ -915,3 +915,240 @@ public extension View {
         modifier(CTXGlassCardModifier(cornerRadius: cornerRadius))
     }
 }
+
+// MARK: - Unified Apple-HIG Modular Components (Zero Duplication)
+
+/// Single-row responsive header bar used across workspace views (GitOps, Issues, Events, Logs, etc.).
+/// Eliminates multi-row header clutter and adapts smoothly via `ViewThatFits`.
+struct CTXUnifiedHeaderBar<LeadingBadges: View, TrailingControls: View>: View {
+    let title: String
+    let systemImage: String
+    var iconTint: Color = .accentColor
+    var countBadge: Int? = nil
+    var countTint: Color = .accentColor
+    var isSidebarCollapsed: Binding<Bool>? = nil
+    var sidebarHelp: String = "Toggle Sidebar"
+    @ViewBuilder var leadingBadges: () -> LeadingBadges
+    @ViewBuilder var trailingControls: () -> TrailingControls
+
+    init(
+        title: String,
+        systemImage: String,
+        iconTint: Color = .accentColor,
+        countBadge: Int? = nil,
+        countTint: Color = .accentColor,
+        isSidebarCollapsed: Binding<Bool>? = nil,
+        sidebarHelp: String = "Toggle Sidebar",
+        @ViewBuilder leadingBadges: @escaping () -> LeadingBadges = { EmptyView() },
+        @ViewBuilder trailingControls: @escaping () -> TrailingControls
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.iconTint = iconTint
+        self.countBadge = countBadge
+        self.countTint = countTint
+        self.isSidebarCollapsed = isSidebarCollapsed
+        self.sidebarHelp = sidebarHelp
+        self.leadingBadges = leadingBadges
+        self.trailingControls = trailingControls
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 10) {
+                titleCluster
+                Spacer(minLength: 12)
+                HStack(spacing: 8) {
+                    trailingControls()
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                titleCluster
+                HStack(spacing: 8) {
+                    trailingControls()
+                }
+            }
+        }
+    }
+
+    private var titleCluster: some View {
+        HStack(spacing: 8) {
+            if let isCollapsed = isSidebarCollapsed {
+                Button {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        isCollapsed.wrappedValue.toggle()
+                    }
+                } label: {
+                    Image(systemName: "sidebar.left")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(isCollapsed.wrappedValue ? Color.accentColor : Color.secondary)
+                        .padding(6)
+                        .background(
+                            isCollapsed.wrappedValue ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.1),
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(sidebarHelp)
+            }
+
+            Image(systemName: systemImage)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(iconTint)
+
+            Text(title)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            if let countBadge {
+                Text("\(countBadge)")
+                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 6.5)
+                    .padding(.vertical, 2)
+                    .background(countTint.opacity(0.15), in: Capsule())
+                    .foregroundStyle(countTint)
+            }
+
+            leadingBadges()
+        }
+    }
+}
+
+/// Interactive, compact Apple-grade KPI filter card. Clicking toggles the active filter.
+struct CTXInteractiveKpiCard: View {
+    let title: String
+    let value: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+    var isSelected: Bool = false
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            CTXGlassPanel(padding: 12) {
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(tint)
+                        .frame(width: 30, height: 30)
+                        .background(tint.opacity(0.13), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .fixedSize()
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 5) {
+                            Text(title.uppercased())
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundStyle(.secondary)
+                                .tracking(0.4)
+                                .lineLimit(1)
+                            if isSelected {
+                                Circle()
+                                    .fill(tint)
+                                    .frame(width: 5, height: 5)
+                            }
+                        }
+                        Text(value)
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(subtitle)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(
+                        isSelected ? tint.opacity(0.75) : (isHovered ? tint.opacity(0.35) : Color.clear),
+                        lineWidth: isSelected ? 1.5 : 1.0
+                    )
+            }
+            .scaleEffect(isHovered ? 1.015 : 1.0)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHovered = hovering
+            }
+            if hovering { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
+        }
+    }
+}
+
+/// Compact semantic pill used for GitOps Sync/Health, Flagger Canary phase, Event type, and Issue severity.
+struct CTXSemanticPill: View {
+    let text: String
+    var systemImage: String? = nil
+    let tint: Color
+    var monospaced: Bool = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 9, weight: .bold))
+            }
+            Text(text)
+                .font(.system(size: 10, weight: .semibold, design: monospaced ? .monospaced : .default))
+                .lineLimit(1)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(tint.opacity(0.13), in: Capsule())
+        .overlay {
+            Capsule().stroke(tint.opacity(0.26), lineWidth: 0.75)
+        }
+    }
+}
+
+
+/// Non-disruptive floating HUD toast overlay (Apple macOS style) that never shifts or jumps layout.
+struct CTXFloatingToast: View {
+    let text: String
+    let systemImage: String
+    let tint: Color
+    var onDismiss: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(tint)
+
+            Text(text)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+
+            if let onDismiss {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .padding(4)
+                        .background(Color.secondary.opacity(0.14), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+        .background(tint.opacity(0.12), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(tint.opacity(0.45), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.24), radius: 14, x: 0, y: 6)
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+}

@@ -43,7 +43,7 @@ struct ClusterOverviewView: View {
             // which reads as the whole screen suddenly jumping. Only clusters
             // that actually hit a notice ever show this swap, matching reports
             // that it "doesn't happen on every cluster".
-            if viewModel.isRefreshingOverview {
+            if viewModel.isRefreshingOverview && viewModel.lastRefreshed == nil {
                 CTXGlassPanel(padding: 14) {
                     CTXLoadingStateView(title: "Refreshing", message: "Running inspection checks.")
                 }

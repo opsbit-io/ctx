@@ -4,21 +4,22 @@ import SwiftUI
 
 /// Authentic Apple-grade Helm Center & Releases Explorer for CTX.
 ///
-/// Complies strictly with Apple macOS Human Interface Guidelines:
-/// - Split Master-Detail layout with fluid resizing and zero clutter.
-/// - Crisp resolution-independent Helm vector branding and native SF Symbols.
+/// Fully responsive across all window and screen sizes:
+/// - Dynamic collapsible master list with ⌘-friendly toggle button.
+/// - Fluid detail pane adapting to any window width without clipping.
+/// - Synchronized responsive revision table with safe horizontal scrolling for narrow views.
+/// - Dedicated Revision Inspector Card for metadata inspection.
 /// - Authentic Helm inspection: User Values vs All Computed Values, rendered
 ///   Kubernetes Manifests with interactive Kind breakdown chips, and Revision Timeline.
-/// - DevOps Production Operations: One-click safe revision Rollback with confirmation.
-/// - Rock-solid Code Viewer: No text-wrapping/squishing, horizontal scrolling, syntax coloring.
+/// - Monospaced Code Viewer with line gutters and syntax coloring.
 struct ClusterHelmView: View {
     @ObservedObject var viewModel: ClusterWorkspaceViewModel
     @State private var searchText = ""
     @State private var selectedStatusFilter = "All"
     @State private var codeSearchText = ""
     @State private var selectedKindFilter: String? = nil
-    @State private var rollbackCandidate: HelmRevisionItem? = nil
-    @State private var isShowingRollbackAlert = false
+    @State private var isMasterListCollapsed = false
+    @State private var selectedRevision: HelmRevisionItem? = nil
 
     private var releases: [HelmReleaseItem] {
         viewModel.helmResult?.items ?? []
@@ -51,98 +52,98 @@ struct ClusterHelmView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             headerBar
-            if let notice = viewModel.helmSourceNotice {
-                sourceNoticeBanner(notice)
-            }
-            if let success = viewModel.helmSuccessNotice {
-                successNoticeBanner(success)
-            }
             mainSplitContent
         }
-        .padding(20)
+        .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .overlay(alignment: .top) {
+            VStack(spacing: 8) {
+                if let notice = viewModel.helmSourceNotice {
+                    CTXFloatingToast(
+                        text: notice,
+                        systemImage: "info.circle.fill",
+                        tint: .blue
+                    )
+                }
+            }
+            .padding(.top, 10)
+            .animation(.spring(response: 0.28, dampingFraction: 0.82), value: viewModel.helmSourceNotice)
+        }
         .onAppear {
             if viewModel.helmResult == nil {
                 viewModel.loadHelm()
             }
         }
-        .alert("Roll Back Helm Release?", isPresented: $isShowingRollbackAlert, presenting: rollbackCandidate) { target in
-            Button("Cancel", role: .cancel) {
-                rollbackCandidate = nil
-            }
-            Button("Roll Back to Rev \(target.revision)", role: .destructive) {
-                if let release = viewModel.selectedHelmRelease {
-                    Task {
-                        await viewModel.rollbackHelmRelease(release, toRevision: target.revision)
-                    }
-                }
-                rollbackCandidate = nil
-            }
-        } message: { target in
-            if let release = viewModel.selectedHelmRelease {
-                Text("Are you sure you want to roll back '\(release.name)' in namespace '\(release.namespace)' to revision \(target.revision)? This executes 'helm rollback' directly against the cluster.")
-            } else {
-                Text("Confirm rollback to revision \(target.revision).")
-            }
-        }
     }
 
-    // MARK: - Header Bar (Clean, Unified, No Duplicate Reload Icon)
+    // MARK: - Header Bar (Clean, Unified, With Sidebar Toggle)
 
     private var headerBar: some View {
-        HStack(alignment: .center, spacing: 14) {
-            HStack(spacing: 10) {
-                HelmBrandIconView(size: 26)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
-                        Text("Helm Releases")
-                            .font(.system(.title3, weight: .bold))
-                            .foregroundStyle(.primary)
-                        Text("\(releases.count)")
-                            .font(.caption.weight(.bold))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.16), in: Capsule())
-                            .foregroundStyle(.blue)
-                    }
-                    Text(scopeDescription)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        HStack(alignment: .center, spacing: 10) {
+            // Master list toggle button (Apple HIG sidebar style)
+            Button {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                    isMasterListCollapsed.toggle()
                 }
+            } label: {
+                Image(systemName: isMasterListCollapsed ? "sidebar.left" : "sidebar.left")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(isMasterListCollapsed ? Color.accentColor : Color.secondary)
+                    .padding(6)
+                    .background(
+                        isMasterListCollapsed ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.1),
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help(isMasterListCollapsed ? "Show Releases List" : "Hide Releases List")
+
+            HStack(spacing: 8) {
+                HelmBrandIconView(size: 22)
+                Text("Helm Releases")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.primary)
+                Text("\(releases.count)")
+                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 6.5)
+                    .padding(.vertical, 2)
+                    .background(Color.blue.opacity(0.15), in: Capsule())
+                    .foregroundStyle(.blue)
             }
 
-            Spacer()
+            Spacer(minLength: 12)
 
             // Status Filter Menu
             statusFilterMenu
 
             // Search Field
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Image(systemName: "magnifyingglass")
-                    .font(.caption.weight(.medium))
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
                 TextField("Filter releases or charts...", text: $searchText)
                     .textFieldStyle(.plain)
-                    .font(.callout)
-                    .frame(width: 180)
+                    .font(.caption)
+                    .frame(minWidth: 100, maxWidth: 180)
                 if !searchText.isEmpty {
                     Button {
                         searchText = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4.5)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.2), lineWidth: 0.75)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Color.secondary.opacity(0.18), lineWidth: 0.75)
             }
         }
     }
@@ -176,8 +177,8 @@ struct ClusterHelmView: View {
                 Text(selectedStatusFilter == "All" ? "Status: All" : selectedStatusFilter.capitalized)
                     .font(.caption.weight(.medium))
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4.5)
             .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .menuStyle(.borderlessButton)
@@ -202,43 +203,27 @@ struct ClusterHelmView: View {
         }
     }
 
-    private func successNoticeBanner(_ notice: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-            Text(notice)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.primary)
-            Spacer()
-            Button {
-                viewModel.helmSuccessNotice = nil
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.green.opacity(0.3), lineWidth: 0.75)
-        }
-    }
-
-    // MARK: - Main Split Content
+    // MARK: - Main Split Content (Responsive Geometry)
 
     private var mainSplitContent: some View {
-        HStack(alignment: .top, spacing: 14) {
-            // Left Master List
-            masterListView
-                .frame(minWidth: 320, idealWidth: 350, maxWidth: 380)
+        GeometryReader { proxy in
+            let totalWidth = proxy.size.width
+            let isCompact = totalWidth < 850
+            let masterWidth: CGFloat = isCompact ? 250 : 280
 
-            // Right Inspector / Detail View
-            detailInspectorView
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(alignment: .top, spacing: 12) {
+                // Left Master List
+                if !isMasterListCollapsed {
+                    masterListView
+                        .frame(width: masterWidth)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                }
+
+                // Right Inspector / Detail View
+                let detailWidth = isMasterListCollapsed ? totalWidth : max(280, totalWidth - masterWidth - 12)
+                detailInspectorView(isMasterCollapsed: isMasterListCollapsed, availableWidth: detailWidth)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
@@ -250,15 +235,15 @@ struct ClusterHelmView: View {
                 // List Header
                 HStack {
                     Text("RELEASES")
-                        .font(.caption2.weight(.bold))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.secondary)
                     Spacer()
                     Text("\(filteredReleases.count) of \(releases.count)")
-                        .font(.caption2.weight(.medium))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
 
                 Divider().opacity(0.4)
 
@@ -266,7 +251,7 @@ struct ClusterHelmView: View {
                     VStack(spacing: 8) {
                         Spacer()
                         Image(systemName: "shippingbox")
-                            .font(.system(size: 28))
+                            .font(.system(size: 26))
                             .foregroundStyle(.secondary.opacity(0.6))
                         Text(emptyTitle)
                             .font(.callout.weight(.medium))
@@ -275,18 +260,18 @@ struct ClusterHelmView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal, 16)
+                            .padding(.horizontal, 14)
                         Spacer()
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
-                        LazyVStack(spacing: 6) {
+                        LazyVStack(spacing: 5) {
                             ForEach(filteredReleases) { release in
                                 releaseRowCard(release)
                             }
                         }
-                        .padding(8)
+                        .padding(6)
                     }
                 }
             }
@@ -312,64 +297,67 @@ struct ClusterHelmView: View {
         return Button {
             viewModel.selectHelmRelease(release)
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
                 // Row Top: Name & Namespace
                 HStack(spacing: 6) {
                     Text(release.name)
-                        .font(.callout.weight(.semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Spacer()
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
                     Text(release.namespace)
-                        .font(.caption2.weight(.medium))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
                         .background(Color.secondary.opacity(0.12), in: Capsule())
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
 
                 // Row Middle: Chart & App Version
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
                     Image(systemName: "shippingbox.fill")
-                        .font(.system(size: 10))
+                        .font(.system(size: 9))
                         .foregroundStyle(.blue)
                     Text(release.chart == KubernetesGitOpsService.unknownValue ? "Storage Secret" : release.chart)
-                        .font(.system(.caption2, design: .monospaced, weight: .medium))
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if release.appVersion != KubernetesGitOpsService.unknownValue && !release.appVersion.isEmpty {
                         Text("•")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary.opacity(0.6))
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary.opacity(0.5))
                         Text("v\(release.appVersion)")
-                            .font(.caption2.weight(.regular))
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
 
                 // Row Bottom: Status Dot, Revision, Updated
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     statusChip(release.status)
                     Text("rev \(release.revision)")
-                        .font(.caption2.weight(.medium))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                     Spacer()
                     Text(release.updated)
-                        .font(.caption2)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
-            .padding(10)
+            .padding(8)
             .background(
                 isSelected ? Color.accentColor.opacity(0.14) : Color.white.opacity(0.02),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(
-                        isSelected ? Color.accentColor.opacity(0.55) : Color.secondary.opacity(0.15),
+                        isSelected ? Color.accentColor.opacity(0.55) : Color.secondary.opacity(0.14),
                         lineWidth: isSelected ? 1.25 : 0.75
                     )
             }
@@ -382,12 +370,12 @@ struct ClusterHelmView: View {
         return HStack(spacing: 4) {
             Circle()
                 .fill(dotColor)
-                .frame(width: 6, height: 6)
+                .frame(width: 5.5, height: 5.5)
             Text(text)
-                .font(.caption2.weight(.semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(dotColor)
         }
-        .padding(.horizontal, 7)
+        .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(dotColor.opacity(0.12), in: Capsule())
     }
@@ -408,14 +396,14 @@ struct ClusterHelmView: View {
         return (.secondary, status.capitalized)
     }
 
-    // MARK: - Detail Inspector View
+    // MARK: - Detail Inspector View (Responsive)
 
-    private var detailInspectorView: some View {
+    private func detailInspectorView(isMasterCollapsed: Bool, availableWidth: CGFloat) -> some View {
         CTXGlassPanel(padding: 0) {
             if let release = viewModel.selectedHelmRelease {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Release Header
-                    detailHeader(release)
+                    // Release Header (Responsive)
+                    detailHeader(release, isMasterCollapsed: isMasterCollapsed, availableWidth: availableWidth)
 
                     Divider().opacity(0.4)
 
@@ -425,18 +413,18 @@ struct ClusterHelmView: View {
                     Divider().opacity(0.4)
 
                     // Tab Content
-                    detailTabContent(release)
+                    detailTabContent(release, availableWidth: availableWidth)
                 }
             } else {
-                noSelectionPlaceholder
+                noSelectionPlaceholder(isMasterCollapsed: isMasterCollapsed)
             }
         }
     }
 
-    private var noSelectionPlaceholder: some View {
+    private func noSelectionPlaceholder(isMasterCollapsed: Bool) -> some View {
         VStack(spacing: 12) {
             Spacer()
-            HelmBrandIconView(size: 48)
+            HelmBrandIconView(size: 44)
             Text("No Release Selected")
                 .font(.title3.weight(.medium))
                 .foregroundStyle(.primary)
@@ -444,67 +432,128 @@ struct ClusterHelmView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 380)
+                .frame(maxWidth: 360)
+
+            if isMasterCollapsed {
+                Button {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        isMasterListCollapsed = false
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sidebar.left")
+                        Text("Show Releases List")
+                    }
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
+            }
+
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func detailHeader(_ release: HelmReleaseItem) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            HelmBrandIconView(size: 28)
+    private func detailHeader(_ release: HelmReleaseItem, isMasterCollapsed: Bool, availableWidth: CGFloat) -> some View {
+        let isNarrow = availableWidth < 620
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
+        return VStack(alignment: .leading, spacing: isNarrow ? 7 : 0) {
+            HStack(alignment: .center, spacing: 10) {
+                if isMasterCollapsed {
+                    Button {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                            isMasterListCollapsed = false
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "sidebar.left")
+                            Text("Releases (\(releases.count))")
+                        }
+                        .font(.caption2.weight(.medium))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3.5)
+                        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show Releases List")
+                }
+
+                HelmBrandIconView(size: 24)
+
+                HStack(spacing: 6) {
                     Text(release.name)
                         .font(.system(.title3, weight: .bold))
                         .foregroundStyle(.primary)
+                        .lineLimit(1)
 
                     CTXCopyIconButton(value: release.name)
 
                     statusChip(release.status)
                 }
-                Text("Namespace: \(release.namespace)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+
+                if !isNarrow {
+                    Spacer(minLength: 8)
+                    metadataBadgesGroup(release)
+                }
             }
 
-            Spacer()
-
-            // Metadata Chips
-            HStack(spacing: 8) {
-                if release.chart != KubernetesGitOpsService.unknownValue {
-                    metadataBadge(title: "Chart", value: release.chart, systemImage: "shippingbox.fill")
+            if isNarrow {
+                HStack {
+                    Text("Namespace: \(release.namespace)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    metadataBadgesGroup(release)
                 }
-                if release.appVersion != KubernetesGitOpsService.unknownValue && !release.appVersion.isEmpty {
-                    metadataBadge(title: "App", value: release.appVersion, systemImage: "tag.fill")
-                }
-                metadataBadge(title: "Revision", value: "\(release.revision)", systemImage: "arrow.counterclockwise")
+            } else {
+                Text("Namespace: \(release.namespace)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    private func metadataBadgesGroup(_ release: HelmReleaseItem) -> some View {
+        HStack(spacing: 6) {
+            if release.chart != KubernetesGitOpsService.unknownValue {
+                metadataBadge(title: "Chart", value: release.chart, systemImage: "shippingbox.fill")
+            }
+            if release.appVersion != KubernetesGitOpsService.unknownValue && !release.appVersion.isEmpty {
+                metadataBadge(title: "App", value: release.appVersion, systemImage: "tag.fill")
+            }
+            metadataBadge(title: "Rev", value: "\(release.revision)", systemImage: "arrow.counterclockwise")
+        }
     }
 
     private func metadataBadge(title: String, value: String, systemImage: String) -> some View {
         HStack(spacing: 4) {
             Image(systemName: systemImage)
-                .font(.system(size: 10))
+                .font(.system(size: 9))
                 .foregroundStyle(Color.accentColor)
             Text("\(title): \(value)")
-                .font(.caption2.weight(.medium))
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 
     // MARK: - Native Segmented Tab Bar & Controls
 
     private var detailTabBar: some View {
-        HStack(spacing: 12) {
-            // Unified Segmented Pill Tab Bar (Icon + Text combined in a single clickable tab)
+        HStack(spacing: 10) {
+            // Unified Segmented Pill Tab Bar
             HStack(spacing: 2) {
                 ForEach(ClusterWorkspaceViewModel.HelmDetailTab.allCases) { tab in
                     let isSelected = viewModel.helmDetailTab == tab
@@ -513,20 +562,20 @@ struct ClusterHelmView: View {
                             viewModel.setHelmTab(tab)
                         }
                     } label: {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 5) {
                             Image(systemName: tabIcon(tab))
-                                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                                .font(.system(size: 10.5, weight: isSelected ? .semibold : .regular))
                             Text(tab.rawValue)
-                                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                                .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
                         }
                         .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4.5)
                         .background(
                             isSelected ? Color.primary.opacity(0.12) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
                         )
                         .contentShape(Rectangle())
                     }
@@ -534,16 +583,16 @@ struct ClusterHelmView: View {
                 }
             }
             .padding(2)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .stroke(Color.secondary.opacity(0.16), lineWidth: 0.75)
             }
             .fixedSize()
 
             Spacer()
 
-            // Values Tab: User vs All Computed toggle (Pill switcher)
+            // Values Tab: User vs All Computed toggle
             if viewModel.helmDetailTab == .values {
                 HStack(spacing: 2) {
                     Button {
@@ -552,12 +601,12 @@ struct ClusterHelmView: View {
                         }
                     } label: {
                         Text("User Values")
-                            .font(.system(size: 11, weight: !viewModel.helmIncludeAllValues ? .semibold : .regular))
+                            .font(.system(size: 10.5, weight: !viewModel.helmIncludeAllValues ? .semibold : .regular))
                             .foregroundStyle(!viewModel.helmIncludeAllValues ? Color.primary : Color.secondary)
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 4.5)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
                             .background(
                                 !viewModel.helmIncludeAllValues ? Color.primary.opacity(0.12) : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 5, style: .continuous)
@@ -572,12 +621,12 @@ struct ClusterHelmView: View {
                         }
                     } label: {
                         Text("All Computed (--all)")
-                            .font(.system(size: 11, weight: viewModel.helmIncludeAllValues ? .semibold : .regular))
+                            .font(.system(size: 10.5, weight: viewModel.helmIncludeAllValues ? .semibold : .regular))
                             .foregroundStyle(viewModel.helmIncludeAllValues ? Color.primary : Color.secondary)
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 4.5)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
                             .background(
                                 viewModel.helmIncludeAllValues ? Color.primary.opacity(0.12) : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 5, style: .continuous)
@@ -595,8 +644,8 @@ struct ClusterHelmView: View {
                 .fixedSize()
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
     }
 
     private func tabIcon(_ tab: ClusterWorkspaceViewModel.HelmDetailTab) -> String {
@@ -610,11 +659,11 @@ struct ClusterHelmView: View {
     // MARK: - Tab Content
 
     @ViewBuilder
-    private func detailTabContent(_ release: HelmReleaseItem) -> some View {
-        if viewModel.isLoadingHelmDetail || viewModel.isRollingBackHelm {
+    private func detailTabContent(_ release: HelmReleaseItem, availableWidth: CGFloat) -> some View {
+        if viewModel.isLoadingHelmDetail {
             CTXLoadingStateView(
-                title: viewModel.isRollingBackHelm ? "Rolling Back Release..." : "Loading \(viewModel.helmDetailTab.rawValue)...",
-                message: viewModel.isRollingBackHelm ? "Running 'helm rollback'..." : "Querying Helm release...",
+                title: "Loading \(viewModel.helmDetailTab.rawValue)...",
+                message: "Querying Helm release...",
                 centered: true
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -639,7 +688,7 @@ struct ClusterHelmView: View {
             case .manifest:
                 manifestTabView
             case .history:
-                historyTabView(release)
+                historyTabView(release, availableWidth: availableWidth)
             }
         }
     }
@@ -685,7 +734,7 @@ struct ClusterHelmView: View {
                             .stroke(Color.secondary.opacity(0.18), lineWidth: 0.75)
                     }
 
-                    // Native CTX Copy Icon Button with spring checkmark animation
+                    // Native CTX Copy Icon Button
                     CTXCopyIconButton(value: yaml)
                 }
                 .padding(.horizontal, 14)
@@ -833,7 +882,7 @@ struct ClusterHelmView: View {
                             .stroke(Color.secondary.opacity(0.18), lineWidth: 0.75)
                     }
 
-                    // Native CTX Copy Icon Button (copies filtered kind or full manifest)
+                    // Native CTX Copy Icon Button
                     CTXCopyIconButton(value: filteredYaml)
                 }
                 .padding(.horizontal, 14)
@@ -896,18 +945,18 @@ struct ClusterHelmView: View {
         return result.isEmpty ? yaml : result.joined(separator: "\n")
     }
 
-    // MARK: - History Tab View (Pixel-Perfect Column Alignment + Rollback Action)
+    // MARK: - History Tab View (Responsive Table with Safe Horizontal Scrolling & Inspector)
 
     private enum HistoryColumns {
-        static let revision: CGFloat = 100
-        static let status: CGFloat = 110
-        static let chart: CGFloat = 170
-        static let appVersion: CGFloat = 100
-        static let updated: CGFloat = 115
-        static let actions: CGFloat = 90
+        static let revision: CGFloat = 65
+        static let status: CGFloat = 85
+        static let chart: CGFloat = 145
+        static let appVersion: CGFloat = 75
+        static let updated: CGFloat = 65
+        static let actions: CGFloat = 85
     }
 
-    private func historyTabView(_ release: HelmReleaseItem) -> some View {
+    private func historyTabView(_ release: HelmReleaseItem, availableWidth: CGFloat) -> some View {
         Group {
             if viewModel.helmHistory.isEmpty {
                 if viewModel.isLoadingHelmDetail {
@@ -935,56 +984,84 @@ struct ClusterHelmView: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    // History Table Header (Exact Matching Column Widths)
-                    HStack(spacing: 12) {
-                        Text("REVISION")
-                            .frame(width: HistoryColumns.revision, alignment: .leading)
-                        Text("STATUS")
-                            .frame(width: HistoryColumns.status, alignment: .leading)
-                        Text("CHART")
-                            .frame(width: HistoryColumns.chart, alignment: .leading)
-                        Text("APP VERSION")
-                            .frame(width: HistoryColumns.appVersion, alignment: .leading)
-                        Text("UPDATED")
-                            .frame(width: HistoryColumns.updated, alignment: .leading)
-                        Text("DESCRIPTION")
-                            .frame(minWidth: 160, maxWidth: .infinity, alignment: .leading)
-                        Text("ACTION")
-                            .frame(width: HistoryColumns.actions, alignment: .trailing)
-                    }
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color.secondary.opacity(0.04))
+                    let minTableWidth: CGFloat = 660
+                    let tableWidth = max(availableWidth - 2, minTableWidth)
+                    let needsHorizontalScroll = availableWidth < minTableWidth
 
-                    Divider().opacity(0.4)
+                    ScrollView(needsHorizontalScroll ? [.horizontal, .vertical] : [.vertical]) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            // Table Header
+                            historyTableHeader
+                                .frame(width: tableWidth, alignment: .leading)
 
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(viewModel.helmHistory) { item in
-                                historyRow(item, isActive: item.revision == release.revision)
-                                Divider().opacity(0.2)
+                            Divider().opacity(0.4)
+
+                            // Table Rows
+                            LazyVStack(spacing: 0) {
+                                ForEach(viewModel.helmHistory) { item in
+                                    let isActive = item.revision == release.revision
+                                    let isSelected = (selectedRevision?.revision ?? release.revision) == item.revision
+                                    Button {
+                                        selectedRevision = item
+                                    } label: {
+                                        historyRow(item, isActive: isActive, isSelected: isSelected)
+                                            .frame(width: tableWidth, alignment: .leading)
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    Divider().opacity(0.18)
+                                }
                             }
                         }
+                        .frame(width: tableWidth, alignment: .topLeading)
+                    }
+
+                    // Bottom Selected Revision Inspector Panel
+                    if let rev = selectedRevision ?? viewModel.helmHistory.first(where: { $0.revision == release.revision }) ?? viewModel.helmHistory.first {
+                        Divider().opacity(0.4)
+                        revisionInspectorFooter(rev, currentRelease: release)
                     }
                 }
             }
         }
     }
 
-    private func historyRow(_ item: HelmRevisionItem, isActive: Bool) -> some View {
-        HStack(spacing: 12) {
-            // Revision Column: rev + CURRENT pill on a single line with zero vertical wrapping
-            HStack(spacing: 6) {
+    private var historyTableHeader: some View {
+        HStack(spacing: 8) {
+            Text("REVISION")
+                .frame(width: HistoryColumns.revision, alignment: .leading)
+            Text("STATUS")
+                .frame(width: HistoryColumns.status, alignment: .leading)
+            Text("CHART")
+                .frame(width: HistoryColumns.chart, alignment: .leading)
+            Text("APP VERSION")
+                .frame(width: HistoryColumns.appVersion, alignment: .leading)
+            Text("UPDATED")
+                .frame(width: HistoryColumns.updated, alignment: .leading)
+            Text("DESCRIPTION")
+                .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
+            Text("ACTION")
+                .frame(width: HistoryColumns.actions, alignment: .trailing)
+        }
+        .font(.system(size: 9.5, weight: .bold))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(Color.secondary.opacity(0.04))
+    }
+
+    private func historyRow(_ item: HelmRevisionItem, isActive: Bool, isSelected: Bool) -> some View {
+        HStack(spacing: 8) {
+            // Revision Column: rev + small CURRENT pill
+            HStack(spacing: 4) {
                 Text("\(item.revision)")
                     .font(.system(.caption, design: .monospaced, weight: .bold))
                     .foregroundStyle(isActive ? Color.accentColor : .primary)
                 if isActive {
                     Text("CURRENT")
-                        .font(.system(size: 8, weight: .bold))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
+                        .font(.system(size: 7.5, weight: .bold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1.5)
                         .background(Color.accentColor.opacity(0.18), in: Capsule())
                         .foregroundStyle(Color.accentColor)
                         .fixedSize()
@@ -997,66 +1074,99 @@ struct ClusterHelmView: View {
                 .frame(width: HistoryColumns.status, alignment: .leading)
 
             // Chart Column
-            Text(item.chart)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(width: HistoryColumns.chart, alignment: .leading)
+            HStack(spacing: 4) {
+                Text(item.chart)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                CTXCopyIconButton(value: item.chart)
+            }
+            .frame(width: HistoryColumns.chart, alignment: .leading)
 
             // App Version Column
             Text(item.appVersion.isEmpty ? "-" : item.appVersion)
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .frame(width: HistoryColumns.appVersion, alignment: .leading)
 
             // Updated Column
             Text(item.updated)
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .frame(width: HistoryColumns.updated, alignment: .leading)
 
             // Description Column
             Text(item.description.isEmpty ? "-" : item.description)
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(minWidth: 160, maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
 
-            // Actions Column: Rollback button for non-active revisions
+            // Read-only state marker. CTX does not mutate Helm releases.
             HStack {
                 Spacer()
                 if isActive {
                     Text("Active")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
-                } else {
-                    Button {
-                        rollbackCandidate = item
-                        isShowingRollbackAlert = true
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "arrow.uturn.backward")
-                                .font(.system(size: 9, weight: .bold))
-                            Text("Rollback")
-                                .font(.caption2.weight(.semibold))
-                        }
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
                 }
             }
             .frame(width: HistoryColumns.actions, alignment: .trailing)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 9)
-        .background(isActive ? Color.accentColor.opacity(0.06) : Color.clear)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(
+            isSelected
+                ? Color.accentColor.opacity(0.12)
+                : (isActive ? Color.accentColor.opacity(0.04) : Color.clear)
+        )
+        .contentShape(Rectangle())
+    }
+
+    private func revisionInspectorFooter(_ item: HelmRevisionItem, currentRelease: HelmReleaseItem) -> some View {
+        let isActive = item.revision == currentRelease.revision
+
+        return HStack(spacing: 12) {
+            Image(systemName: isActive ? "checkmark.circle.fill" : "clock.arrow.circlepath")
+                .font(.system(size: 14))
+                .foregroundStyle(isActive ? Color.green : Color.accentColor)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("Revision \(item.revision)")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.primary)
+
+                    if isActive {
+                        Text("Active")
+                            .font(.system(size: 8, weight: .bold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(Color.green.opacity(0.16), in: Capsule())
+                            .foregroundStyle(.green)
+                    }
+
+                    Text("•  \(item.status.capitalized)  •  \(item.updated)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(item.description.isEmpty ? "No description recorded" : item.description)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer()
+
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(Color.secondary.opacity(0.06))
     }
 
     // MARK: - Robust Monospaced Code Viewer with Line Gutter & Intrinsic Width
@@ -1070,10 +1180,7 @@ struct ClusterHelmView: View {
 
     private func codeViewer(_ content: String, kindFilter: String? = nil) -> some View {
         let rawLines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-
-        // If kind filter is set, find the sub-blocks that belong to that kind
         let linesToDisplay: [CodeLineItem] = buildDisplayLines(rawLines: rawLines, kindFilter: kindFilter, searchQuery: codeSearchText)
-
         let gutterWidth: CGFloat = linesToDisplay.count > 999 ? 44 : 34
 
         return GeometryReader { proxy in
@@ -1081,13 +1188,11 @@ struct ClusterHelmView: View {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     ForEach(linesToDisplay) { item in
                         HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            // Fixed-width line number gutter
                             Text("\(item.number)")
                                 .font(.system(size: 11, weight: .regular, design: .monospaced))
                                 .foregroundStyle(Color.secondary.opacity(0.45))
                                 .frame(width: gutterWidth, alignment: .trailing)
 
-                            // Code line with strict lineLimit and fixedSize to PREVENT word-squishing!
                             Text(item.text.isEmpty ? " " : item.text)
                                 .font(.system(size: 12, weight: .regular, design: .monospaced))
                                 .foregroundStyle(codeLineColor(item.text))
@@ -1096,16 +1201,12 @@ struct ClusterHelmView: View {
                                 .textSelection(.enabled)
                         }
                         .frame(minHeight: 18, alignment: .leading)
-                        .background(
-                            item.isMatch
-                                ? Color.yellow.opacity(0.22)
-                                : Color.clear
-                        )
+                        .background(item.isMatch ? Color.yellow.opacity(0.22) : Color.clear)
                     }
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .frame(minWidth: proxy.size.width, maxWidth: .infinity, alignment: .topLeading)
+                .frame(minWidth: proxy.size.width, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1200,34 +1301,11 @@ struct HelmBrandIconView: View {
     var size: CGFloat = 26
 
     var body: some View {
-        let image: NSImage? = {
-            if let bundle = Bundle.safeModule,
-               let url = bundle.url(forResource: "helm", withExtension: "svg"),
-               let img = NSImage(contentsOf: url) {
-                return img
-            }
-            if let directImg = NSImage(contentsOfFile: "Sources/CTX/Resources/helm.svg") {
-                return directImg
-            }
-            return nil
-        }()
-
-        if let nsImage = image {
-            let _ = { nsImage.size = NSSize(width: size, height: size) }()
-            Image(nsImage: nsImage)
-                .resizable()
-                .interpolation(.high)
-                .aspectRatio(contentMode: .fit)
-                .frame(width: size, height: size)
-        } else {
-            // Resolution-independent CNCF Helm Nautical Wheel Vector
-            KubernetesIconView(
-                icon: .helm,
-                size: size,
-                tint: Color(hex: "2496ED"),
-                filledBackground: false
-            )
-            .frame(width: size, height: size)
-        }
+        CTXBrandSVGIcon(
+            assetName: "helm",
+            size: size,
+            fallbackSystemImage: "helm",
+            fallbackTint: Color(hex: "2496ED")
+        )
     }
 }

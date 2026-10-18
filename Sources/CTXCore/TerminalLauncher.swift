@@ -65,7 +65,6 @@ public enum TerminalLauncher {
     ) throws {
         let environment = try environment(for: profile, kubeconfigPath: kubeconfigPath)
         let script = launchScript(for: profile, environment: environment)
-
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("ctx-terminal", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -126,6 +125,39 @@ public enum TerminalLauncher {
         let safe = String(profile.name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" })
             .trimmingCharacters(in: CharacterSet(charactersIn: "-."))
         return (safe.isEmpty ? "ctx-profile" : safe) + ".command"
+    }
+
+    public static func sanitizedScriptName(_ value: String, fallback: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let safe = String(value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" })
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+        return (safe.isEmpty ? fallback : safe) + ".command"
+    }
+
+    public static func openScript(
+        _ script: String,
+        named scriptName: String,
+        preferredTerminalBundlePath: String = ""
+    ) throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ctx-terminal", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        discardStaleScripts(in: directory)
+        let scriptURL = directory.appendingPathComponent(scriptName)
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
+
+        guard let terminal = TerminalApplication.resolved(preferredBundlePath: preferredTerminalBundlePath) else {
+            throw TerminalLauncherError.launchFailed("no terminal application was found")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", terminal.bundlePath, scriptURL.path]
+        do {
+            try process.run()
+        } catch {
+            throw TerminalLauncherError.launchFailed(error.localizedDescription)
+        }
     }
 
     internal static func shellQuoted(_ value: String) -> String {

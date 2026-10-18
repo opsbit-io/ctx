@@ -27,6 +27,7 @@ public protocol KubernetesGitOpsReading: Sendable {
         context: KubernetesContextProfile,
         namespace: KubernetesNamespaceSelection
     ) async -> GitOpsReadResult
+
 }
 
 /// Reads real ArgoCD `Application` and Flux `Kustomization`/`HelmRelease` custom
@@ -69,6 +70,11 @@ public final class KubernetesGitOpsReader: KubernetesGitOpsReading {
             controller: "Flux CD",
             resource: "helmreleases.helm.toolkit.fluxcd.io",
             parse: KubernetesGitOpsService.parseFluxHelmReleases
+        ),
+        Source(
+            controller: "Flagger",
+            resource: "canaries.flagger.app",
+            parse: KubernetesGitOpsService.parseFlaggerCanaries
         )
     ]
 
@@ -208,7 +214,5 @@ public final class KubernetesGitOpsReader: KubernetesGitOpsReading {
             || lowered.contains("no matches for kind")
             || lowered.contains("unable to recognize")
     }
-
-
 
 }

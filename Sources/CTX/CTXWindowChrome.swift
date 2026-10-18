@@ -33,16 +33,34 @@ enum CTXWindowChrome {
         // supplies the material above it.
         window.backgroundColor = .windowBackgroundColor
         window.titlebarSeparatorStyle = .none
+        if let toolbar = window.toolbar, toolbar.items.isEmpty {
+            window.toolbar = nil
+        }
     }
 }
 
 private struct ChromelessWindowMarker: NSViewRepresentable {
+    let title: String?
+    let removeToolbar: Bool
+
+    init(title: String? = nil, removeToolbar: Bool = false) {
+        self.title = title
+        self.removeToolbar = removeToolbar
+    }
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         // The view has no window until it is in the hierarchy.
         DispatchQueue.main.async {
             if let window = view.window {
                 CTXWindowChrome.markChromeless(window)
+                if let title, !title.isEmpty {
+                    window.title = title
+                }
+                if removeToolbar {
+                    window.toolbar = nil
+                    window.titlebarSeparatorStyle = .none
+                }
             }
         }
         return view
@@ -51,13 +69,20 @@ private struct ChromelessWindowMarker: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         if let window = nsView.window {
             CTXWindowChrome.markChromeless(window)
+            if let title, !title.isEmpty {
+                window.title = title
+            }
+            if removeToolbar {
+                window.toolbar = nil
+                window.titlebarSeparatorStyle = .none
+            }
         }
     }
 }
 
 extension View {
     /// Marks this view's window as one of CTX's own designed windows.
-    func ctxChromelessWindow() -> some View {
-        background(ChromelessWindowMarker())
+    func ctxChromelessWindow(title: String? = nil, removeToolbar: Bool = false) -> some View {
+        background(ChromelessWindowMarker(title: title, removeToolbar: removeToolbar))
     }
 }

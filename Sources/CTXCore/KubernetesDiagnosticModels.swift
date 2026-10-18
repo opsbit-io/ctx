@@ -74,7 +74,7 @@ public struct ResourceDiagnosticIssue: Identifiable, Codable, Equatable, Hashabl
         // of treating it as newly inserted (losing scroll position, re-animating)
         // and what lets notification dispatch tell "still broken" apart from
         // "just broke."
-        self.id = "\(ruleId)|\(resourceID)"
+        self.id = "\(ruleId)|\(resourceID)|\(message)"
         self.resourceID = resourceID
         self.resourceName = resourceName
         self.resourceNamespace = resourceNamespace

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="flaggerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#326CE5"/>
+      <stop offset="100%" stop-color="#2250B5"/>
+    </linearGradient>
+  </defs>
+  <polygon points="128,12 232,72 232,184 128,244 24,184 24,72" fill="url(#flaggerGrad)"/>
+  <polygon points="128,24 221,78 221,178 128,232 35,178 35,78" fill="none" stroke="#8FB3FF" stroke-opacity="0.35" stroke-width="4"/>
+  <!-- Flagpole -->
+  <rect x="78" y="64" width="11" height="128" rx="5.5" fill="#FFFFFF"/>
+  <!-- Progressive delivery two-tone flag -->
+  <path d="M96,68 L178,68 C184,68 187,74 183,79 L164,104 L183,129 C187,134 184,140 178,140 L96,140 Z" fill="#FFFFFF"/>
+  <path d="M96,104 L164,104 L183,129 C187,134 184,140 178,140 L96,140 Z" fill="#C1D2F7"/>
+  <!-- Canary progress accent dot -->
+  <circle cx="83.5" cy="56" r="7.5" fill="#FFB020"/>
+</svg>

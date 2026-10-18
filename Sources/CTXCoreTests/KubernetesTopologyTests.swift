@@ -1061,6 +1061,13 @@ func testTopologyBuilderStopsDuringLargeInputCancellation() {
     assert(checks < pods.count, "cancellation should stop before traversing all rows")
 }
 
+func testExitCodeParsingRequiresAnExactNumericToken() {
+    assert(TopologyFailureEvaluator.parseExitCode(status: "terminated with exit code 1") == 1)
+    assert(TopologyFailureEvaluator.parseExitCode(status: "10 restarts") == nil)
+    assert(TopologyFailureEvaluator.parseExitCode(status: "container 21 is pending") == nil)
+    assert(TopologyFailureEvaluator.parseExitCode(status: "OOMKilled") == 137)
+}
+
 
 func runKubernetesTopologyTests() throws {
     try testHygieneScoreRewardsFullyDeclaredHealthyPods()
@@ -1103,4 +1110,5 @@ func runKubernetesTopologyTests() throws {
     testTopologyCountSummaryAgreesAtEveryLength()
     testTopologyCountSummaryFollowsTheSnapshot()
     testTopologyBuilderStopsDuringLargeInputCancellation()
+    testExitCodeParsingRequiresAnExactNumericToken()
 }

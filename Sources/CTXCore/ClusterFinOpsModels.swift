@@ -8,6 +8,7 @@ public enum FinOpsTimeWindow: String, CaseIterable, Identifiable, Codable, Senda
     case d7 = "7d"
     case d30 = "30d"
     case monthToDate = "month"
+    case custom = "custom"
 
     public var id: String { rawValue }
 
@@ -17,6 +18,7 @@ public enum FinOpsTimeWindow: String, CaseIterable, Identifiable, Codable, Senda
         case .d7: return "Last 7 Days"
         case .d30: return "Last 30 Days"
         case .monthToDate: return "Month to Date"
+        case .custom: return "Custom Range"
         }
     }
 
@@ -26,6 +28,7 @@ public enum FinOpsTimeWindow: String, CaseIterable, Identifiable, Codable, Senda
         case .d7: return "7 Days"
         case .d30: return "30 Days"
         case .monthToDate: return "Month to Date"
+        case .custom: return "Custom Range"
         }
     }
 
@@ -35,6 +38,7 @@ public enum FinOpsTimeWindow: String, CaseIterable, Identifiable, Codable, Senda
         case .d7: return 7.0
         case .d30: return 30.0
         case .monthToDate: return max(1.0, Double(Calendar.current.component(.day, from: Date())))
+        case .custom: return 7.0
         }
     }
 
@@ -44,6 +48,7 @@ public enum FinOpsTimeWindow: String, CaseIterable, Identifiable, Codable, Senda
         case .d7: return 30.0 / 7.0
         case .d30: return 1.0
         case .monthToDate: return 30.0 / max(1.0, Double(Calendar.current.component(.day, from: Date())))
+        case .custom: return 30.0 / 7.0
         }
     }
 }
@@ -88,28 +93,43 @@ public struct CloudPricingProfile: Codable, Equatable, Sendable {
         self.loadBalancerMonthly = loadBalancerMonthly
     }
 
+    /// CTX cannot derive cloud billing rates from Kubernetes inventory alone.
+    /// A profile is usable only when an explicit integration or caller supplied rates.
+    public var hasExplicitRates: Bool {
+        cpuHourlyPerCore > 0 || memoryHourlyPerGiB > 0 || storageMonthlyPerGB > 0 || loadBalancerMonthly > 0
+    }
+
     public static let aws = CloudPricingProfile(
-        providerName: "AWS (m6i / gp3)",
-        cpuHourlyPerCore: 0.0316,
-        memoryHourlyPerGiB: 0.0042,
-        storageMonthlyPerGB: 0.08
+        providerName: "AWS pricing unavailable",
+        cpuHourlyPerCore: 0,
+        memoryHourlyPerGiB: 0,
+        storageMonthlyPerGB: 0,
+        loadBalancerMonthly: 0
     )
 
     public static let gcp = CloudPricingProfile(
-        providerName: "GCP (n2 / pd-standard)",
-        cpuHourlyPerCore: 0.0316,
-        memoryHourlyPerGiB: 0.0042,
-        storageMonthlyPerGB: 0.075
+        providerName: "GCP pricing unavailable",
+        cpuHourlyPerCore: 0,
+        memoryHourlyPerGiB: 0,
+        storageMonthlyPerGB: 0,
+        loadBalancerMonthly: 0
     )
 
     public static let azure = CloudPricingProfile(
-        providerName: "Azure (Dsv5 / SSD)",
-        cpuHourlyPerCore: 0.0320,
-        memoryHourlyPerGiB: 0.0040,
-        storageMonthlyPerGB: 0.08
+        providerName: "Azure pricing unavailable",
+        cpuHourlyPerCore: 0,
+        memoryHourlyPerGiB: 0,
+        storageMonthlyPerGB: 0,
+        loadBalancerMonthly: 0
     )
 
-    public static let standard = aws
+    public static let standard = CloudPricingProfile(
+        providerName: "Pricing unavailable",
+        cpuHourlyPerCore: 0,
+        memoryHourlyPerGiB: 0,
+        storageMonthlyPerGB: 0,
+        loadBalancerMonthly: 0
+    )
 }
 
 /// Detailed cost breakdown in USD for a given object or cluster slice.
@@ -150,6 +170,13 @@ public struct FinOpsAllocationRow: Identifiable, Codable, Equatable, Sendable {
     public var estimatedWasteUSD: Double    // Unutilized paid capacity in USD for the window
     public var monthlyRunRateUSD: Double    // Extrapolated monthly spend
     public var resourceKind: String?
+    /// True only when the efficiency value is backed by a current metrics sample.
+    public var hasLiveUsage: Bool
+    public var cpuCoresRequested: Double
+    public var cpuCoresUsed: Double
+    public var memoryGiBRequested: Double
+    public var memoryGiBUsed: Double
+    public var storageGiB: Double
 
     public init(
         id: String,
@@ -159,7 +186,13 @@ public struct FinOpsAllocationRow: Identifiable, Codable, Equatable, Sendable {
         efficiencyScore: Double,
         estimatedWasteUSD: Double,
         monthlyRunRateUSD: Double,
-        resourceKind: String? = nil
+        resourceKind: String? = nil,
+        hasLiveUsage: Bool = false,
+        cpuCoresRequested: Double = 0,
+        cpuCoresUsed: Double = 0,
+        memoryGiBRequested: Double = 0,
+        memoryGiBUsed: Double = 0,
+        storageGiB: Double = 0
     ) {
         self.id = id
         self.name = name
@@ -169,6 +202,12 @@ public struct FinOpsAllocationRow: Identifiable, Codable, Equatable, Sendable {
         self.estimatedWasteUSD = max(0.0, estimatedWasteUSD)
         self.monthlyRunRateUSD = max(0.0, monthlyRunRateUSD)
         self.resourceKind = resourceKind
+        self.hasLiveUsage = hasLiveUsage
+        self.cpuCoresRequested = cpuCoresRequested
+        self.cpuCoresUsed = cpuCoresUsed
+        self.memoryGiBRequested = memoryGiBRequested
+        self.memoryGiBUsed = memoryGiBUsed
+        self.storageGiB = storageGiB
     }
 }
 
@@ -232,11 +271,11 @@ public struct FinOpsRecommendation: Identifiable, Codable, Equatable, Sendable {
         currentAllocation: String,
         suggestedAllocation: String,
         yamlPatchSnippet: String? = nil,
-        confidence: String = "High · Verified Metrics",
-        safetyHeadroom: String = "+35% Headroom · Limits Retained",
+        confidence: String = KubernetesGitOpsService.unknownValue,
+        safetyHeadroom: String = KubernetesGitOpsService.unknownValue,
         verificationCommand: String? = nil,
         dryRunCommand: String? = nil,
-        riskLevel: String = "Low Risk"
+        riskLevel: String = KubernetesGitOpsService.unknownValue
     ) {
         self.id = id
         self.title = title
@@ -258,53 +297,90 @@ public struct FinOpsRecommendation: Identifiable, Codable, Equatable, Sendable {
 
 /// Status of the cost monitoring data source.
 public enum FinOpsDataSourceStatus: Equatable, Sendable {
-    case openCostConnected(service: String, namespace: String)
-    case kubecostConnected(service: String, namespace: String)
+    case openCostAgent(endpoint: String, version: String)
+    case kubecostAgent(endpoint: String)
     case builtInEstimation(profile: CloudPricingProfile)
 
-    public var isExternalProvider: Bool {
+    public var badgeTitle: String {
         switch self {
-        case .openCostConnected, .kubecostConnected: return true
-        case .builtInEstimation: return false
+        case .openCostAgent(_, let version):
+            return version.isEmpty ? "OpenCost" : "OpenCost \(version)"
+        case .kubecostAgent:
+            return "Kubecost Verified"
+        case .builtInEstimation(let profile):
+            return profile.hasExplicitRates ? "Estimated · \(profile.providerName)" : profile.providerName
         }
     }
 
-    public var displayTitle: String {
+    public var isLiveAgent: Bool {
         switch self {
-        case .openCostConnected(let service, _):
-            return "OpenCost Live (\(service))"
-        case .kubecostConnected(let service, _):
-            return "Kubecost Live (\(service))"
-        case .builtInEstimation(let profile):
-            return "Cloud Estimation (\(profile.providerName))"
+        case .openCostAgent, .kubecostAgent:
+            return true
+        case .builtInEstimation:
+            return false
         }
     }
 }
 
-/// High-level KPIs and summaries for the FinOps cockpit.
-public struct FinOpsSummary: Codable, Equatable, Sendable {
+/// Comprehensive FinOps cost analysis report.
+public struct FinOpsReport: Equatable, Sendable {
+    public var window: FinOpsTimeWindow
+    public var aggregation: FinOpsAggregation
+    public var summary: FinOpsSummary
+    public var rows: [FinOpsAllocationRow]
+    public var timeSeries: [FinOpsTimeSeriesPoint]
+    public var recommendations: [FinOpsRecommendation]
+    public var dataSource: FinOpsDataSourceStatus
+    public var hasLivePodTelemetry: Bool
+
+    public init(
+        window: FinOpsTimeWindow = .h24,
+        aggregation: FinOpsAggregation = .namespace,
+        summary: FinOpsSummary = .zero,
+        rows: [FinOpsAllocationRow] = [],
+        timeSeries: [FinOpsTimeSeriesPoint] = [],
+        recommendations: [FinOpsRecommendation] = [],
+        dataSource: FinOpsDataSourceStatus = .builtInEstimation(profile: .standard),
+        hasLivePodTelemetry: Bool = false
+    ) {
+        self.window = window
+        self.aggregation = aggregation
+        self.summary = summary
+        self.rows = rows
+        self.timeSeries = timeSeries
+        self.recommendations = recommendations
+        self.dataSource = dataSource
+        self.hasLivePodTelemetry = hasLivePodTelemetry
+    }
+}
+
+/// High-level financial summary of the cluster during the active analysis window.
+public struct FinOpsSummary: Equatable, Sendable {
     public var windowSpendUSD: Double
     public var monthlyRunRateUSD: Double
     public var potentialMonthlySavingsUSD: Double
-    public var overallEfficiencyScore: Double   // 0.0 to 1.0
+    public var overallEfficiencyScore: Double
+
     public var totalCoresAllocated: Double
     public var totalMemoryGiBAllocated: Double
     public var totalStorageGiBAllocated: Double
+
     public var totalCoresUsed: Double
     public var totalMemoryGiBUsed: Double
+
     public var totalIdleCostUSD: Double
     public var totalComputeCostUSD: Double
     public var totalMemoryCostUSD: Double
     public var totalStorageCostUSD: Double
 
     public init(
-        windowSpendUSD: Double,
-        monthlyRunRateUSD: Double,
-        potentialMonthlySavingsUSD: Double,
-        overallEfficiencyScore: Double,
-        totalCoresAllocated: Double,
-        totalMemoryGiBAllocated: Double,
-        totalStorageGiBAllocated: Double,
+        windowSpendUSD: Double = 0,
+        monthlyRunRateUSD: Double = 0,
+        potentialMonthlySavingsUSD: Double = 0,
+        overallEfficiencyScore: Double = 0,
+        totalCoresAllocated: Double = 0,
+        totalMemoryGiBAllocated: Double = 0,
+        totalStorageGiBAllocated: Double = 0,
         totalCoresUsed: Double = 0,
         totalMemoryGiBUsed: Double = 0,
         totalIdleCostUSD: Double = 0,
@@ -327,51 +403,5 @@ public struct FinOpsSummary: Codable, Equatable, Sendable {
         self.totalStorageCostUSD = totalStorageCostUSD
     }
 
-    public static let zero = FinOpsSummary(
-        windowSpendUSD: 0,
-        monthlyRunRateUSD: 0,
-        potentialMonthlySavingsUSD: 0,
-        overallEfficiencyScore: 1.0,
-        totalCoresAllocated: 0,
-        totalMemoryGiBAllocated: 0,
-        totalStorageGiBAllocated: 0,
-        totalCoresUsed: 0,
-        totalMemoryGiBUsed: 0,
-        totalIdleCostUSD: 0,
-        totalComputeCostUSD: 0,
-        totalMemoryCostUSD: 0,
-        totalStorageCostUSD: 0
-    )
-}
-
-/// The complete FinOps report rendered by the CTX FinOps center.
-public struct FinOpsReport: Sendable {
-    public var window: FinOpsTimeWindow
-    public var aggregation: FinOpsAggregation
-    public var summary: FinOpsSummary
-    public var rows: [FinOpsAllocationRow]
-    public var timeSeries: [FinOpsTimeSeriesPoint]
-    public var recommendations: [FinOpsRecommendation]
-    public var dataSource: FinOpsDataSourceStatus
-    public var hasLivePodTelemetry: Bool
-
-    public init(
-        window: FinOpsTimeWindow,
-        aggregation: FinOpsAggregation,
-        summary: FinOpsSummary,
-        rows: [FinOpsAllocationRow],
-        timeSeries: [FinOpsTimeSeriesPoint],
-        recommendations: [FinOpsRecommendation],
-        dataSource: FinOpsDataSourceStatus,
-        hasLivePodTelemetry: Bool = true
-    ) {
-        self.window = window
-        self.aggregation = aggregation
-        self.summary = summary
-        self.rows = rows
-        self.timeSeries = timeSeries
-        self.recommendations = recommendations
-        self.dataSource = dataSource
-        self.hasLivePodTelemetry = hasLivePodTelemetry
-    }
+    public static let zero = FinOpsSummary()
 }

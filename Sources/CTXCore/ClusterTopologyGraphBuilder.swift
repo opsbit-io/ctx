@@ -39,7 +39,7 @@ public enum ClusterTopologyGraphBuilder {
                 kind: .pod,
                 name: pod.name,
                 namespace: pod.ns,
-                subtitle: "\(pod.cells["Status"] ?? "-") · \(pod.cells["Ready"] ?? "-") ready · \(pod.cells["Restarts"] ?? "0") restarts",
+                subtitle: "\(pod.cells["Status"] ?? "—") · \(pod.cells["Ready"] ?? "—") ready · \(pod.cells["Restarts"] ?? "—") restarts",
                 health: health,
                 row: pod,
                 issueCount: issues

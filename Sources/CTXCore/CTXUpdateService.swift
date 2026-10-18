@@ -37,7 +37,7 @@ public final class CTXUpdateService: Sendable {
     public init(
         runner: any CloudCommandRunning = CloudCommandRunner(),
         currentVersion: @escaping @Sendable () -> String = {
-            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
         }
     ) {
         self.runner = runner

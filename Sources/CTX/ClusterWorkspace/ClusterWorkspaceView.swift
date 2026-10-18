@@ -5,10 +5,25 @@ struct ClusterWorkspaceScene: View {
     @ObservedObject var store: ProfileStore
     let contextID: String
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
+    @State private var activeContextID: String?
+
+    private var effectiveContextID: String {
+        activeContextID ?? contextID
+    }
 
     private var context: KubernetesContextProfile? {
-        store.kubernetesContexts.first { $0.id == contextID }
-            ?? store.kubernetesContexts.first { $0.contextName == contextID }
+        if !effectiveContextID.isEmpty {
+            if let found = store.kubernetesContexts.first(where: { $0.id == effectiveContextID || $0.contextName == effectiveContextID }) {
+                return found
+            }
+        }
+        if !contextID.isEmpty {
+            if let found = store.kubernetesContexts.first(where: { $0.id == contextID || $0.contextName == contextID }) {
+                return found
+            }
+        }
+        return nil
     }
 
     private var profile: CloudProfile? {
@@ -18,33 +33,34 @@ struct ClusterWorkspaceScene: View {
 
     var body: some View {
         if let context {
-            ClusterWorkspaceView(store: store, context: context, onStatusCheckFailed: { contextName, reason in
-                store.markKubernetesContextNeedsLogin(contextName: contextName, reason: reason)
-            })
+            ClusterWorkspaceContextHost(
+                store: store,
+                context: context,
+                onSelectCluster: { newContext in
+                    activeContextID = newContext.id
+                }
+            )
+            .id(context.id)
             .onChange(of: profile == nil) { _, isDeleted in
                 if isDeleted {
                     dismissWindow()
                 }
             }
             .onChange(of: profile?.status) { _, newStatus in
-                if newStatus == .needsLogin || newStatus == .disconnecting || newStatus == .unknown {
-                    dismissWindow()
-                }
-            }
-            .onChange(of: store.activeKubeContext) { _, activeContext in
-                if activeContext != context.contextName {
+                if newStatus == .disconnecting {
                     dismissWindow()
                 }
             }
         } else {
-            CTXGlassPanel {
-                CTXErrorStateView(
-                    title: "Context unavailable",
-                    message: "Reload CTX and open the workspace from a discovered Kubernetes context."
-                )
-            }
-            .padding(28)
-            .frame(minWidth: 600, minHeight: 440)
+            ClusterWorkspaceNewTabLauncher(
+                store: store,
+                onSelectCluster: { selected in
+                    activeContextID = selected.id
+                }
+            )
+            .toolbar(.hidden, for: .windowToolbar)
+            .ignoresSafeArea(.all, edges: .top)
+            .ctxChromelessWindow(title: "New Cluster Tab", removeToolbar: true)
         }
     }
 
@@ -52,7 +68,7 @@ struct ClusterWorkspaceScene: View {
         dismiss()
         DispatchQueue.main.async {
             for window in NSApp.windows {
-                if window.title == contextID || window.title.contains(contextID) {
+                if window.title == effectiveContextID || window.title.contains(effectiveContextID) {
                     window.close()
                 }
             }
@@ -60,16 +76,54 @@ struct ClusterWorkspaceScene: View {
     }
 }
 
+/// Owns presentation state for exactly one workspace window and context.
+/// Resource caches may deduplicate reads underneath, but tabs, namespace, selection,
+/// cancellation and loading state must never leak into another window.
+private struct ClusterWorkspaceContextHost: View {
+    @ObservedObject var store: ProfileStore
+    let context: KubernetesContextProfile
+    let onSelectCluster: (KubernetesContextProfile) -> Void
+    @StateObject private var viewModel: ClusterWorkspaceViewModel
+
+    init(
+        store: ProfileStore,
+        context: KubernetesContextProfile,
+        onSelectCluster: @escaping (KubernetesContextProfile) -> Void
+    ) {
+        self.store = store
+        self.context = context
+        self.onSelectCluster = onSelectCluster
+        _viewModel = StateObject(wrappedValue: ClusterWorkspaceViewModel(context: context))
+    }
+
+    var body: some View {
+        ClusterWorkspaceView(
+            store: store,
+            viewModel: viewModel,
+            onSelectCluster: onSelectCluster
+        )
+        .onAppear {
+            viewModel.onStatusCheckFailed = { contextName, reason in
+                store.markKubernetesContextNeedsLogin(contextName: contextName, reason: reason)
+            }
+        }
+    }
+}
+
 struct ClusterWorkspaceView: View {
     let store: ProfileStore
-    @StateObject private var viewModel: ClusterWorkspaceViewModel
+    let onSelectCluster: ((KubernetesContextProfile) -> Void)?
+    @ObservedObject var viewModel: ClusterWorkspaceViewModel
     @State private var isSearchPresented: Bool = false
 
-    init(store: ProfileStore, context: KubernetesContextProfile, onStatusCheckFailed: ((String, String) -> Void)? = nil) {
+    init(
+        store: ProfileStore,
+        viewModel: ClusterWorkspaceViewModel,
+        onSelectCluster: ((KubernetesContextProfile) -> Void)? = nil
+    ) {
         self.store = store
-        let vm = ClusterWorkspaceViewModel(context: context)
-        vm.onStatusCheckFailed = onStatusCheckFailed
-        _viewModel = StateObject(wrappedValue: vm)
+        self.viewModel = viewModel
+        self.onSelectCluster = onSelectCluster
     }
 
     @AppStorage(AppAppearance.storageKey) private var appAppearanceRaw: String = AppAppearance.dark.rawValue
@@ -84,54 +138,37 @@ struct ClusterWorkspaceView: View {
         NavigationSplitView {
             ClusterWorkspaceSidebar(viewModel: viewModel)
                 .background(colorScheme == .light ? Color(NSColor.controlBackgroundColor).opacity(0.5) : Color.black.opacity(0.25))
-                .navigationTitle("Cluster")
                 .navigationSplitViewColumnWidth(min: 220, ideal: 248, max: 310)
         } detail: {
-            // Measured here, once. The detail pane has a definite size, so a
-            // `GeometryReader` is safe at this level — unlike inside the page's
-            // scroll view, where a table measuring its own frame never resolved and
-            // silently kept its 900pt default. That default is why tables stopped
-            // short of the panel edge on a wide window *and* shed their
-            // lowest-priority columns as though space were tight.
             GeometryReader { proxy in
-            VStack(spacing: 0) {
-                ClusterWorkspaceHeader(viewModel: viewModel, store: store)
+                VStack(spacing: 0) {
+                    ClusterWorkspaceHeader(
+                        viewModel: viewModel,
+                        store: store,
+                        onSelectCluster: onSelectCluster,
+                        onBackToCTX: backToCTX
+                    )
                     .padding(.horizontal, 22)
                     .padding(.top, 14)
                     .padding(.bottom, 12)
 
-                Divider()
-                    .opacity(0.5)
+                    Divider()
+                        .opacity(0.5)
 
-                ClusterWorkspaceContent(viewModel: viewModel)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(colorScheme == .light ? Color(NSColor.windowBackgroundColor) : Color(white: 0.12).opacity(0.65))
-            // The safe-area inset under `hiddenTitleBar` stays. Ignoring it removed
-            // the empty band in a normal window but clipped the header off the top
-            // edge in full screen, where there is no title bar to inset against.
-            .navigationTitle(viewModel.title)
-            .environment(\.workspaceContentWidth, proxy.size.width)
-            }
-        }
-        .toolbar {
-            // `.navigation` placement is the same slot Mail and Notes put their own
-            // back/forward controls in — it sits right beside the traffic lights
-            // this window already reserves space for via `NavigationSplitView`, so
-            // this needs no manual positioning to avoid overlapping them.
-            ToolbarItem(placement: .navigation) {
-                Button(action: backToCTX) {
-                    Label("Back to CTX", systemImage: "chevron.backward")
+                    ClusterWorkspaceContent(viewModel: viewModel)
                 }
-                .help("Back to CTX")
-                .accessibilityLabel("Back to CTX")
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(colorScheme == .light ? Color(NSColor.windowBackgroundColor) : Color(white: 0.12).opacity(0.65))
+                .environment(\.workspaceContentWidth, proxy.size.width)
             }
         }
+        .toolbar(.hidden, for: .windowToolbar)
+        .ignoresSafeArea(.all, edges: .top)
         .background(VisualEffectBackground(material: .hudWindow, blendingMode: .behindWindow))
-        .ctxChromelessWindow()
+        .ctxChromelessWindow(title: viewModel.title, removeToolbar: true)
         .preferredColorScheme(currentAppearance.colorScheme)
         .frame(minWidth: 680, minHeight: 480)
-        .task {
+        .task(id: viewModel.context.id) {
             await viewModel.refreshOverviewIfNeeded()
             viewModel.prefetchWorkspaceResources()
 
@@ -191,8 +228,16 @@ struct ClusterWorkspaceView: View {
                     .disabled(viewModel.isEditingYAML)
 
                 // Bypass Cache & Reload (⌘R)
-                Button("") { viewModel.loadSelectedSection(bypassCache: true) }
+                Button("") { viewModel.refreshCurrentScreen() }
                     .keyboardShortcut("r", modifiers: .command)
+
+                // New Tab (⌘T)
+                Button("") { openWindow(id: "cluster-workspace", value: "") }
+                    .keyboardShortcut("t", modifiers: .command)
+
+                // New Window (⌘N)
+                Button("") { openWindow(id: "cluster-workspace", value: "") }
+                    .keyboardShortcut("n", modifiers: .command)
 
                 // Section Navigation (⌘1 to ⌘8)
                 Button("") { viewModel.selectedSection = .overview }
@@ -249,10 +294,6 @@ struct ClusterWorkspaceView: View {
         }
     }
 
-    /// Raises the main window rather than opening a second instance of it —
-    /// `Window` (unlike `WindowGroup`) is a singleton scene, so `openWindow`
-    /// already does the right thing if it's still open; this only has to
-    /// handle the case the main window was closed while this one stayed open.
     private func backToCTX() {
         if let existing = NSApp.windows.first(where: { $0.identifier?.rawValue == "main" || $0.title == "CTX" }) {
             existing.makeKeyAndOrderFront(nil)
@@ -266,6 +307,8 @@ struct ClusterWorkspaceView: View {
 struct ClusterWorkspaceHeader: View {
     @ObservedObject var viewModel: ClusterWorkspaceViewModel
     let store: ProfileStore
+    var onSelectCluster: ((KubernetesContextProfile) -> Void)? = nil
+    var onBackToCTX: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -273,10 +316,36 @@ struct ClusterWorkspaceHeader: View {
         }
     }
 
+    @ViewBuilder
+    private var navigationControl: some View {
+        if let onBackToCTX {
+            Button(action: onBackToCTX) {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .bold))
+                    Text("Profiles")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.secondary.opacity(0.18), lineWidth: 0.5)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Back to CTX Profiles window")
+        }
+    }
+
+    private var clusterProfileProvider: CloudProvider {
+        KubernetesProfileAdapter.cloudProfile(from: viewModel.context).provider
+    }
+
     private var clusterIcon: some View {
-        Image(systemName: "shippingbox.circle.fill")
-            .font(.system(.title, weight: .semibold))
-            .foregroundStyle(.indigo)
+        ProviderIcon(provider: clusterProfileProvider, size: 26, fallbackTint: Color.accentColor)
             .frame(width: 46, height: 46)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay {
@@ -287,59 +356,69 @@ struct ClusterWorkspaceHeader: View {
     }
 
     private var horizontalHeader: some View {
-        HStack(alignment: .top, spacing: 16) {
+        HStack(alignment: .center, spacing: 14) {
+            navigationControl
             clusterIcon
             titleBlock
                 .layoutPriority(1)
-            Spacer(minLength: 18)
+            Spacer(minLength: 16)
             statusBlock
         }
     }
 
     private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 9) {
-                Text(viewModel.title)
-                    .font(.system(.title2, weight: .bold))
+        VStack(alignment: .leading, spacing: 6) {
+            if let onSelectCluster {
+                ClusterWorkspaceClusterSelector(
+                    store: store,
+                    currentContext: viewModel.context,
+                    onSelectCluster: onSelectCluster,
+                    style: .standard
+                )
+            } else {
+                HStack(spacing: 9) {
+                    Text(viewModel.title)
+                        .font(.system(.title2, weight: .bold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(viewModel.fullContextName)
+                        .layoutPriority(1)
+                    CTXEnvironmentBadge(environment: viewModel.context.environmentType)
+                        .fixedSize()
+                }
+            }
+
+            HStack(spacing: 8) {
+                Text(viewModel.clusterName)
+                    .font(.system(.footnote, design: .monospaced, weight: .medium))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .help(viewModel.title)
-                    .layoutPriority(1)
-                CTXEnvironmentBadge(environment: viewModel.context.environmentType)
-                    .fixedSize()
+
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(viewModel.fullContextName, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Copy full context ARN: \(viewModel.fullContextName)")
             }
+            .help(viewModel.fullContextName)
 
-            Text(viewModel.clusterName)
-                .font(.system(.footnote, design: .monospaced, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(viewModel.clusterName)
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { metadataBadges }
-                VStack(alignment: .leading, spacing: 6) { metadataBadges }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var metadataBadges: some View {
-        CTXStatusBadge(title: viewModel.context.providerType.label, systemImage: "cloud", tint: viewModel.context.providerType.tint)
-        ClusterNamespaceSelector(viewModel: viewModel)
-        CTXStatusBadge(title: viewModel.displayUserName, systemImage: "person.crop.circle", tint: .secondary)
-            .help(viewModel.userName)
-        if store.activeKubeContext == viewModel.context.contextName {
-            CTXStatusBadge(title: "CLI Default", systemImage: "terminal.fill", tint: .blue)
-                .help("This cluster is currently active in ~/.kube/config for terminal commands")
-        }
-        if let expiry = AWSSessionExpirationService().sessionExpiry(for: KubernetesProfileAdapter.cloudProfile(from: viewModel.context)) {
-            let remaining = expiry.timeIntervalSinceNow
-            if remaining > 0 {
-                let hours = Int(remaining) / 3600
-                let mins = (Int(remaining) % 3600) / 60
-                CTXStatusBadge(title: "Session: \(hours)h \(mins)m", systemImage: "clock.badge.checkmark", tint: remaining < 1800 ? .orange : .green)
-                    .help("Cloud STS Session valid until \(expiry.formatted(.dateTime.hour().minute()))")
+            HStack(spacing: 8) {
+                ClusterNamespaceSelector(viewModel: viewModel)
+                if let expiry = AWSSessionExpirationService().sessionExpiry(for: KubernetesProfileAdapter.cloudProfile(from: viewModel.context)) {
+                    let remaining = expiry.timeIntervalSinceNow
+                    if remaining > 0 {
+                        let hours = Int(remaining) / 3600
+                        let mins = (Int(remaining) % 3600) / 60
+                        CTXStatusBadge(title: "Session: \(hours)h \(mins)m", systemImage: "clock.badge.checkmark", tint: remaining < 1800 ? .orange : .green)
+                            .help("Cloud STS Session valid until \(expiry.formatted(.dateTime.hour().minute()))")
+                    }
+                }
             }
         }
     }
@@ -367,27 +446,18 @@ struct ClusterWorkspaceHeader: View {
     }
 
     private var refreshButton: some View {
-        Button {
-            viewModel.refreshCurrentScreen()
-        } label: {
-            if viewModel.isRefreshingCurrentScreen {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(.caption, weight: .semibold))
-            }
-        }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .disabled(viewModel.isRefreshingCurrentScreen)
-        .frame(width: 24, height: 22)
-        .help("Refresh current inspection view")
+        CTXReloadIconButton(
+            action: { viewModel.refreshCurrentScreen() },
+            isLoading: viewModel.isRefreshingCurrentScreen
+        )
+        .help("Refresh current screen (⌘R)")
     }
 }
 
 struct ClusterWorkspaceView_Previews: PreviewProvider {
     static var previews: some View {
-        ClusterWorkspaceView(store: ProfileStore(startsBackgroundServices: false), context: .previewProduction)
+        let store = ProfileStore(startsBackgroundServices: false)
+        let vm = ClusterWorkspaceViewModel(context: .previewProduction)
+        ClusterWorkspaceView(store: store, viewModel: vm)
     }
 }

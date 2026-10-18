@@ -77,9 +77,7 @@ struct ClusterResourceListView: View {
                 // established) — the only case where the whole panel is the error.
                 ResourceIssuePanel(section: section, list: list, retry: refresh)
             } else {
-                if isLoading {
-                    CTXInlineRefreshingIndicator(state: .refreshing)
-                } else if refreshError != nil {
+                if refreshError != nil {
                     CTXInlineRefreshingIndicator(state: .failed, retry: refresh)
                 }
                 if let focus, focus.section == section, let clearFocus {

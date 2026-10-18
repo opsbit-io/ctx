@@ -148,11 +148,14 @@ public enum TopologyFailureEvaluator {
     }
 
     public static func parseExitCode(status: String) -> Int? {
+        let numericTokens = status
+            .components(separatedBy: CharacterSet.decimalDigits.inverted)
+            .compactMap(Int.init)
         if status.contains("137") || status.contains("OOMKilled") {
             return 137
         } else if status.contains("139") {
             return 139
-        } else if status.contains("1") {
+        } else if numericTokens.contains(1) {
             return 1
         }
         return nil

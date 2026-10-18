@@ -278,7 +278,7 @@ func testGitOpsReaderShowsArgoCDEvenWhenFluxIsNotInstalled() async throws {
     assert(result.items.contains { $0.sourceKind == .git })
     assert(result.items.contains { $0.sourceKind == .helmChart && $0.chart == "grafana" })
     // All three controller resource types are probed independently.
-    assert(kubectl.requestedResources.count == 3, "got \(kubectl.requestedResources)")
+    assert(kubectl.requestedResources.count == 4, "got \(kubectl.requestedResources)")
 }
 
 /// A cluster with neither controller is a normal state with its own empty message —
@@ -358,7 +358,7 @@ func testGitOpsReadsControllersConcurrently() async throws {
     _ = await KubernetesGitOpsReader(kubectl: kubectl)
         .applications(context: testKubernetesContext(), namespace: .allNamespaces)
     let elapsed = Date().timeIntervalSince(started)
-    assert(kubectl.requestedResources.count == 3)
+    assert(kubectl.requestedResources.count == 4)
     assert(elapsed < 0.6, "three 250ms reads should overlap, took \(elapsed)s")
 }
 
@@ -435,7 +435,113 @@ func testHelmValuesAndManifestCommandConstruction() async throws {
     assert(histArgs.contains("history") && histArgs.contains("my-app") && histArgs.contains("json"))
 }
 
+
+func testFlaggerCanaryParsesPhaseWeightAndTargetDeployment() throws {
+    let items: [[String: Any]] = [[
+        "metadata": [
+            "name": "checkout-canary",
+            "namespace": "shop",
+            "creationTimestamp": "2026-01-10T10:00:00Z"
+        ],
+        "spec": [
+            "targetRef": ["kind": "Deployment", "name": "checkout"],
+            "service": ["port": 8080],
+            "analysis": ["interval": "1m", "maxWeight": 50, "stepWeight": 10]
+        ],
+        "status": [
+            "phase": "Progressing",
+            "canaryWeight": 30,
+            "iterations": 3,
+            "failedChecks": 0
+        ]
+    ]]
+    let parsed = KubernetesGitOpsService.parseFlaggerCanaries(items)
+    assert(parsed.count == 1)
+    let canary = parsed[0]
+    assert(canary.provider == "Flagger")
+    assert(canary.kind == "Canary")
+    assert(canary.name == "checkout-canary")
+    assert(canary.namespace == "shop")
+    assert(canary.syncStatus == "Progressing")
+    assert(canary.canaryWeightPercent == 60)
+    assert(canary.managedResources.first?.kind == "Deployment")
+    assert(canary.managedResources.first?.name == "checkout")
+}
+
+func testFlaggerMissingFieldsRemainUnknown() throws {
+    let parsed = KubernetesGitOpsService.parseFlaggerCanaries([[
+        "metadata": ["name": "example-canary", "namespace": "example"],
+        "spec": [:],
+        "status": [:]
+    ]])
+
+    guard let canary = parsed.first else {
+        assertionFailure("Expected the Flagger resource to parse")
+        return
+    }
+    assert(canary.targetRevision == KubernetesGitOpsService.unknownValue)
+    assert(canary.syncedRevision == KubernetesGitOpsService.unknownValue)
+    assert(canary.canaryWeightPercent == nil)
+    assert(canary.managedResources.isEmpty, "Missing targetRef must not become an invented Deployment")
+}
+
+
+func testGitOpsManagerArgoCDSyncAndRefresh() async throws {
+    let runner = ScriptedKubectl()
+    runner.defaultOutput = .success("application.argoproj.io/guestbook patched")
+    let manager = KubernetesGitOpsManager(kubectl: runner, timeout: 5)
+    
+    let app = GitOpsApplicationItem(
+        namespace: "argocd",
+        name: "guestbook",
+        provider: "ArgoCD",
+        kind: "Application"
+    )
+    
+    let syncResult = await manager.sync(app: app, context: testKubernetesContext(), prune: true)
+    assert(syncResult.success)
+    let syncArgs = runner.commands.last?.arguments ?? []
+    assert(syncArgs.contains("patch") && syncArgs.contains("application") && syncArgs.contains("guestbook"))
+    assert(syncArgs.contains("--type") && syncArgs.contains("merge"))
+    
+    let refreshResult = await manager.refresh(app: app, context: testKubernetesContext(), hard: false)
+    assert(refreshResult.success)
+    let refreshArgs = runner.commands.last?.arguments ?? []
+    assert(refreshArgs.contains("annotate") && refreshArgs.contains("argocd.argoproj.io/refresh=normal"))
+    
+    let hardRefreshResult = await manager.refresh(app: app, context: testKubernetesContext(), hard: true)
+    assert(hardRefreshResult.success)
+    let hardArgs = runner.commands.last?.arguments ?? []
+    assert(hardArgs.contains("argocd.argoproj.io/refresh=hard"))
+}
+
+func testGitOpsManagerFluxReconcileAndSuspend() async throws {
+    let runner = ScriptedKubectl()
+    runner.defaultOutput = .success("kustomization.kustomize.toolkit.fluxcd.io/podinfo annotated")
+    let manager = KubernetesGitOpsManager(kubectl: runner, timeout: 5)
+    
+    let app = GitOpsApplicationItem(
+        namespace: "flux-system",
+        name: "podinfo",
+        provider: "Flux CD",
+        kind: "Kustomization"
+    )
+    
+    let reconcileResult = await manager.sync(app: app, context: testKubernetesContext(), prune: true)
+    assert(reconcileResult.success)
+    let recArgs = runner.commands.last?.arguments ?? []
+    assert(recArgs.contains("annotate") && recArgs.contains("kustomization") && recArgs.contains("podinfo"))
+    assert(recArgs.contains { $0.contains("reconcile.fluxcd.io/requestedAt") })
+    
+    let suspendResult = await manager.suspend(app: app, context: testKubernetesContext(), suspended: true)
+    assert(suspendResult.success)
+    let suspArgs = runner.commands.last?.arguments ?? []
+    assert(suspArgs.contains("patch") && suspArgs.contains("kustomization"))
+}
+
 func runKubernetesGitOpsAndHelmTests() async throws {
+    try testFlaggerMissingFieldsRemainUnknown()
+    try testFlaggerCanaryParsesPhaseWeightAndTargetDeployment()
     try await testGitOpsIsReadClusterWideRegardlessOfSelectedNamespace()
     try await testGitOpsPartialFailureKeepsAppsAndReportsIncompleteness()
     try await testGitOpsReadsControllersConcurrently()
@@ -456,4 +562,6 @@ func runKubernetesGitOpsAndHelmTests() async throws {
     try await testHelmSecretFallbackNeverRequestsSecretValues()
     try testHelmHistoryJSONParsesRevisions()
     try await testHelmValuesAndManifestCommandConstruction()
+    try await testGitOpsManagerArgoCDSyncAndRefresh()
+    try await testGitOpsManagerFluxReconcileAndSuspend()
 }
