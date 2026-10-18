@@ -163,9 +163,16 @@ func testProfileStoreReloadsLiveAWSPathAndSharesCommandDefaults() async throws {
 
     defaults.set(updatedConfig.path, forKey: CTXDefaultsKey.awsConfigPath)
     store.reloadConfiguredSources()
-    try await Task.sleep(nanoseconds: 400_000_000)
+    var updatedProfile: CloudProfile?
+    for _ in 0..<50 {
+        if let match = store.profiles.first(where: { $0.provider == .aws && $0.name == "updated" }) {
+            updatedProfile = match
+            break
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+    }
 
-    guard let updated = store.profiles.first(where: { $0.provider == .aws && $0.name == "updated" }) else {
+    guard let updated = updatedProfile else {
         assertionFailure("updated AWS config path was not rediscovered")
         return
     }
