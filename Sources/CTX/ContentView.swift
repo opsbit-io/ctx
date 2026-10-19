@@ -7,40 +7,26 @@ struct ContentView: View {
     @AppStorage(AppAppearance.storageKey) private var appAppearanceRaw: String = AppAppearance.dark.rawValue
     @AppStorage(CTXDefaultsKey.hasCompletedOnboardingTourV1) private var hasCompletedOnboardingTour = false
     @Environment(\.colorScheme) private var colorScheme
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     private var currentAppearance: AppAppearance {
         AppAppearance(rawValue: appAppearanceRaw) ?? .dark
     }
 
-    private func toggleSidebar() {
-        withAnimation(.easeInOut(duration: 0.22)) {
-            columnVisibility = (columnVisibility == .detailOnly) ? .all : .detailOnly
-        }
-    }
-
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(store: store, toggleSidebar: toggleSidebar)
+        NavigationSplitView {
+            SidebarView(store: store)
                 .background(colorScheme == .light ? Color(NSColor.controlBackgroundColor).opacity(0.5) : Color.black.opacity(0.25))
                 .navigationSplitViewColumnWidth(min: 180, ideal: 250, max: 480)
         } detail: {
-            DetailPane(store: store, columnVisibility: $columnVisibility, toggleSidebar: toggleSidebar)
+            DetailPane(store: store)
                 .background(colorScheme == .light ? Color(NSColor.windowBackgroundColor) : Color(white: 0.12).opacity(0.65))
         }
-        .toolbar(.hidden, for: .windowToolbar)
-        .ignoresSafeArea(.all, edges: .top)
-        // This window contains a live, scrolling SwiftUI List. In-window blending
-        // keeps that content in the same compositor hierarchy; behind-window
-        // blending on a fully transparent window can leave stale list layers visible
-        // after disclosure groups move or collapse.
+        // Blending mode withinWindow keeps the compositor hierarchy deterministic
         .background(VisualEffectBackground(material: .hudWindow, blendingMode: .withinWindow))
-        .ctxChromelessWindow(removeToolbar: true)
+        .toolbar(removing: .sidebarToggle)
+        .ctxChromelessWindow(removeToolbar: false)
         .preferredColorScheme(currentAppearance.colorScheme)
         .profileLifecyclePresentationHost(store: store, surface: .mainWindow)
-        // Unlike a system sheet, a plain `.overlay` doesn't remove what's
-        // underneath from the accessibility tree, so VoiceOver could still
-        // reach the sidebar/detail pane through the dimmed scrim.
         .accessibilityHidden(!hasCompletedOnboardingTour)
         .overlay {
             if !hasCompletedOnboardingTour {
@@ -57,70 +43,14 @@ struct ContentView: View {
 
 struct DetailPane: View {
     @ObservedObject var store: ProfileStore
-    @Binding var columnVisibility: NavigationSplitViewVisibility
-    var toggleSidebar: () -> Void
     @Environment(\.openSettings) private var openSettings: OpenSettingsAction
 
     private var activeToolbarProfiles: [CloudProfile] {
         store.connectedProfiles
     }
 
-    private func openNewProfile() {
-        let targetFolder: CloudFolder? = if case .folder(let folderID) = store.selectedSelection {
-            store.allFolders.first { $0.id == folderID }
-        } else {
-            nil
-        }
-        store.presentProfileEditor(.selectProvider(targetFolder: targetFolder), from: .mainWindow)
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            // Header Bar: aligned with traffic lights (when sidebar is hidden) + Sidebar Toggle + New Profile / Folder button
-            HStack(spacing: 6) {
-                if columnVisibility == .detailOnly {
-                    Button {
-                        toggleSidebar()
-                    } label: {
-                        Image(systemName: "sidebar.leading")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 26, height: 26)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Show Sidebar (⌘⌃S)")
-
-                    Menu {
-                        Button {
-                            openNewProfile()
-                        } label: {
-                            Label("New Profile", systemImage: "plus")
-                        }
-
-                        Button {
-                            store.presentFolderEditor(.add, from: .mainWindow)
-                        } label: {
-                            Label("New Folder", systemImage: "folder")
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 26, height: 26)
-                            .contentShape(Rectangle())
-                    }
-                    .menuIndicator(.hidden)
-                    .buttonStyle(.plain)
-                    .help("Create Profile or Folder")
-                }
-
-                Spacer()
-            }
-            .padding(.leading, 72)
-            .padding(.trailing, 16)
-            .frame(height: 38)
-
             // Inline notification bars — part of the layout so they NEVER cover content
             if store.showExpirationWarning || store.updateAvailable {
                 VStack(spacing: 8) {
@@ -186,7 +116,7 @@ struct DetailPane: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 4)
+                .padding(.top, 12)
                 .padding(.bottom, 4)
             }
 
@@ -207,7 +137,7 @@ struct DetailPane: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 8)
+                .padding(.top, store.showExpirationWarning || store.updateAvailable ? 4 : 12)
                 .padding(.bottom, 8)
             }
 

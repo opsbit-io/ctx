@@ -42,8 +42,18 @@ enum CTXWindowChrome {
         // supplies the material above it.
         window.backgroundColor = .windowBackgroundColor
         window.titlebarSeparatorStyle = .none
-        if let toolbar = window.toolbar, toolbar.items.isEmpty {
-            window.toolbar = nil
+    }
+
+    /// Removes any unwanted sidebar toggle items inserted automatically by SwiftUI's NavigationSplitView
+    /// that would otherwise collide with or obscure standard macOS traffic light buttons.
+    static func stripUnwantedSidebarToggle(from window: NSWindow) {
+        guard let toolbar = window.toolbar else { return }
+        for i in (0..<toolbar.items.count).reversed() {
+            let item = toolbar.items[i]
+            if item.itemIdentifier.rawValue.contains("toggleSidebar") {
+                item.view?.isHidden = true
+                toolbar.removeItem(at: i)
+            }
         }
     }
 
@@ -57,7 +67,10 @@ enum CTXWindowChrome {
             button.isEnabled = true
             button.alphaValue = 1.0
 
-            // Ensure container hierarchy leading to the buttons is not hidden
+            if let sup = button.superview {
+                sup.addSubview(button)
+            }
+
             var ancestor: NSView? = button.superview
             while let current = ancestor, current !== window.contentView?.superview {
                 current.isHidden = false
@@ -90,7 +103,13 @@ private struct ChromelessWindowMarker: NSViewRepresentable {
                     window.toolbar = nil
                     window.titlebarSeparatorStyle = .none
                 }
+                CTXWindowChrome.stripUnwantedSidebarToggle(from: window)
                 CTXWindowChrome.ensureStandardButtonsVisible(on: window)
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    CTXWindowChrome.stripUnwantedSidebarToggle(from: window)
+                    CTXWindowChrome.ensureStandardButtonsVisible(on: window)
+                }
             }
         }
         return view
@@ -98,15 +117,10 @@ private struct ChromelessWindowMarker: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         if let window = nsView.window {
-            CTXWindowChrome.markChromeless(window)
-            if let title, !title.isEmpty {
+            if let title, !title.isEmpty, window.title != title {
                 window.title = title
             }
-            if removeToolbar {
-                window.toolbar = nil
-                window.titlebarSeparatorStyle = .none
-            }
-            CTXWindowChrome.ensureStandardButtonsVisible(on: window)
+            CTXWindowChrome.stripUnwantedSidebarToggle(from: window)
         }
     }
 }

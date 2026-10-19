@@ -3,7 +3,6 @@ import SwiftUI
 
 struct SidebarView: View {
     @ObservedObject var store: ProfileStore
-    var toggleSidebar: (() -> Void)? = nil
     @Environment(\.openSettings) private var openSettings: OpenSettingsAction
     @State private var expandedGroups: Set<String> = []
     @State private var deleteCandidate: CloudProfile? = nil
@@ -16,49 +15,6 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header Bar: window controls headroom + Sidebar Toggle + New Profile / Folder button
-            HStack(spacing: 6) {
-                Spacer()
-
-                Button {
-                    toggleSidebar?()
-                } label: {
-                    Image(systemName: "sidebar.leading")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 26, height: 26)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Toggle Sidebar (⌘⌃S)")
-
-                Menu {
-                    Button {
-                        openNewProfile()
-                    } label: {
-                        Label("New Profile", systemImage: "plus")
-                    }
-
-                    Button {
-                        store.presentFolderEditor(.add, from: .mainWindow)
-                    } label: {
-                        Label("New Folder", systemImage: "folder")
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 26, height: 26)
-                        .contentShape(Rectangle())
-                }
-                .menuIndicator(.hidden)
-                .buttonStyle(.plain)
-                .help("Create Profile or Folder")
-            }
-            .padding(.leading, 72)
-            .padding(.trailing, 12)
-            .frame(height: 38)
-
             // Custom Search Bar (No Blue Focus Ring!)
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
@@ -118,18 +74,17 @@ struct SidebarView: View {
                             if pGroup.folderGroups.contains(where: { g in g.profiles.contains { $0.status == .connected } }) {
                                 Circle()
                                     .fill(Color.green)
-                                    .frame(width: 5, height: 5)
+                                    .frame(width: 6, height: 6)
                             }
 
                             Spacer()
 
-                            let totalCount = pGroup.folderGroups.reduce(0) { $0 + $1.profiles.count }
-                            Text("\(totalCount)")
-                                .font(.system(.caption2, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 5)
+                            Text("\(pGroup.folderGroups.reduce(0) { $0 + $1.profiles.count })")
+                                .font(.system(.caption2, weight: .bold))
+                                .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
                                 .background(Color.secondary.opacity(0.12), in: Capsule())
+                                .foregroundStyle(.secondary)
                         }
                         .contentShape(Rectangle())
                     }
@@ -137,15 +92,13 @@ struct SidebarView: View {
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
-            
-            Divider()
-                .padding(.horizontal, 12)
-            
-            // Settings & Profile Footer
+
+            // Current user display & Settings gear
             HStack(spacing: 8) {
+                // Identity initials avatar
                 Text(store.localIdentityInitials)
-                    .font(.system(.caption2, weight: .bold))
-                    .foregroundColor(Color.accentColor)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.accentColor)
                     .frame(width: 22, height: 22)
                     .background(Color.accentColor.opacity(0.15), in: Circle())
                     .overlay {
@@ -176,6 +129,27 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button {
+                        openNewProfile()
+                    } label: {
+                        Label("New Profile", systemImage: "plus")
+                    }
+
+                    Button {
+                        store.presentFolderEditor(.add, from: .mainWindow)
+                    } label: {
+                        Label("New Folder", systemImage: "folder")
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .menuIndicator(.hidden)
+                .help("Create Profile or Folder")
+            }
         }
         .deleteProfileAlert(store: store, candidate: $deleteCandidate)
         .onChange(of: store.selectedSelection) { _, newValue in

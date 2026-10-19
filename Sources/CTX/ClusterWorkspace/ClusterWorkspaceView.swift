@@ -58,9 +58,7 @@ struct ClusterWorkspaceScene: View {
                     activeContextID = selected.id
                 }
             )
-            .toolbar(.hidden, for: .windowToolbar)
-            .ignoresSafeArea(.all, edges: .top)
-            .ctxChromelessWindow(title: "New Cluster Tab", removeToolbar: true)
+            .ctxChromelessWindow(title: "New Cluster Tab", removeToolbar: false)
         }
     }
 
@@ -135,7 +133,7 @@ struct ClusterWorkspaceView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: .constant(.all)) {
             ClusterWorkspaceSidebar(viewModel: viewModel)
                 .background(colorScheme == .light ? Color(NSColor.controlBackgroundColor).opacity(0.5) : Color.black.opacity(0.25))
                 .navigationSplitViewColumnWidth(min: 220, ideal: 248, max: 310)
@@ -162,10 +160,9 @@ struct ClusterWorkspaceView: View {
                 .environment(\.workspaceContentWidth, proxy.size.width)
             }
         }
-        .toolbar(.hidden, for: .windowToolbar)
-        .ignoresSafeArea(.all, edges: .top)
+        .toolbar(removing: .sidebarToggle)
         .background(VisualEffectBackground(material: .hudWindow, blendingMode: .behindWindow))
-        .ctxChromelessWindow(title: viewModel.title, removeToolbar: true)
+        .ctxChromelessWindow(title: viewModel.title, removeToolbar: false)
         .preferredColorScheme(currentAppearance.colorScheme)
         .frame(minWidth: 680, minHeight: 480)
         .task(id: viewModel.context.id) {
