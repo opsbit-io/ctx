@@ -3,48 +3,18 @@ import SwiftUI
 
 struct SidebarView: View {
     @ObservedObject var store: ProfileStore
+    @Binding var searchQuery: String
     @Environment(\.openSettings) private var openSettings: OpenSettingsAction
     @State private var expandedGroups: Set<String> = []
     @State private var deleteCandidate: CloudProfile? = nil
     @State private var expandedProviders: Set<CloudProvider> = Set(CloudProvider.allCases)
-    @State private var sidebarSearchQuery = ""
 
     private var providerGroups: [ProviderGroup] {
-        ProfileGrouping.providerGroups(store.groupedProfiles, query: sidebarSearchQuery)
+        ProfileGrouping.providerGroups(store.groupedProfiles, query: searchQuery)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Custom Search Bar (No Blue Focus Ring!)
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                TextField("Search...", text: $sidebarSearchQuery)
-                    .textFieldStyle(.plain)
-                    .font(.caption2)
-
-                if !sidebarSearchQuery.isEmpty {
-                    Button {
-                        sidebarSearchQuery = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Clear search")
-                    .accessibilityLabel("Clear search")
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .ctxGlassCard(cornerRadius: 6)
-            .padding(.horizontal, 12)
-            .padding(.top, 4)
-            .padding(.bottom, 6)
-
             List(selection: $store.selectedSelection) {
                 ForEach(providerGroups) { pGroup in
                     DisclosureGroup(isExpanded: providerBinding(for: pGroup.provider)) {
@@ -130,27 +100,6 @@ struct SidebarView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button {
-                        openNewProfile()
-                    } label: {
-                        Label("New Profile", systemImage: "plus")
-                    }
-
-                    Button {
-                        store.presentFolderEditor(.add, from: .mainWindow)
-                    } label: {
-                        Label("New Folder", systemImage: "folder")
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .menuIndicator(.hidden)
-                .help("Create Profile or Folder")
-            }
-        }
         .deleteProfileAlert(store: store, candidate: $deleteCandidate)
         .onChange(of: store.selectedSelection) { _, newValue in
             if case .profile(let profileID) = newValue,
@@ -164,20 +113,11 @@ struct SidebarView: View {
 
 
     private func providerBinding(for provider: CloudProvider) -> Binding<Bool> {
-        ProfileGrouping.expansionBinding(for: provider, in: $expandedProviders, forcedOpenWhile: sidebarSearchQuery)
+        ProfileGrouping.expansionBinding(for: provider, in: $expandedProviders, forcedOpenWhile: searchQuery)
     }
 
     private func binding(for id: String) -> Binding<Bool> {
-        ProfileGrouping.expansionBinding(for: id, in: $expandedGroups, forcedOpenWhile: sidebarSearchQuery)
-    }
-
-    private func openNewProfile() {
-        let targetFolder: CloudFolder? = if case .folder(let folderID) = store.selectedSelection {
-            store.allFolders.first { $0.id == folderID }
-        } else {
-            nil
-        }
-        store.presentProfileEditor(.selectProvider(targetFolder: targetFolder), from: .mainWindow)
+        ProfileGrouping.expansionBinding(for: id, in: $expandedGroups, forcedOpenWhile: searchQuery)
     }
 
 }

@@ -11,10 +11,7 @@ extension ProfileDetailView {
                 .padding(.leading, 4)
 
             VStack(spacing: 0) {
-                HStack {
-                    Text(profile.accountLabel)
-                        .foregroundStyle(fieldLabelStyle)
-                    Spacer()
+                ProfileDetailResponsiveRow(label: profile.accountLabel) {
                     HStack(spacing: 6) {
                         Text(profile.accountID.isEmpty ? "-" : profile.accountID)
                             .font(.system(.body, design: .monospaced))
@@ -25,32 +22,21 @@ extension ProfileDetailView {
                         }
                     }
                 }
-                .padding(.horizontal, 18)
-                .frame(minHeight: 38)
 
                 if !profile.region.isEmpty {
                     Divider()
                         .padding(.leading, 16)
-                    HStack {
-                        Text(profile.regionLabel)
-                            .foregroundStyle(fieldLabelStyle)
-                        Spacer()
+                    ProfileDetailResponsiveRow(label: profile.regionLabel) {
                         Text(profile.region)
                             .font(.system(.body, design: .monospaced))
                             .fontWeight(.medium)
                     }
-                    .padding(.horizontal, 18)
-                    .frame(minHeight: 38)
                 }
 
                 if !profile.roleName.isEmpty || profile.provider == .aws {
                     Divider()
                         .padding(.leading, 16)
-                    HStack {
-                        Text(profile.roleLabel)
-                            .foregroundStyle(fieldLabelStyle)
-                        Spacer()
-
+                    ProfileDetailResponsiveRow(label: profile.roleLabel) {
                         if availableRoles.count > 1 {
                             AWSRoleMenu(roles: availableRoles, currentRole: profile.roleName) { newRole in
                                 roleUpdateError = store.updateAWSRole(
@@ -72,39 +58,28 @@ extension ProfileDetailView {
                             }
                         }
                     }
-                    .padding(.horizontal, 18)
-                    .frame(minHeight: 38)
                 }
 
                 if profile.provider == .aws && !profile.ssoStartURL.isEmpty {
                     Divider()
                         .padding(.leading, 16)
-                    HStack {
-                        Text("SSO Start URL")
-                            .foregroundStyle(fieldLabelStyle)
-                        Spacer()
+                    ProfileDetailResponsiveRow(label: "SSO Start URL") {
                         Text(profile.ssoStartURL)
-                            .lineLimit(1)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
                             .fontWeight(.medium)
                             .textSelection(.enabled)
                     }
-                    .padding(.horizontal, 18)
-                    .frame(minHeight: 38)
                 }
 
                 if profile.provider == .aws && !profile.ssoRegion.isEmpty {
                     Divider()
                         .padding(.leading, 16)
-                    HStack {
-                        Text("SSO Region")
-                            .foregroundStyle(fieldLabelStyle)
-                        Spacer()
+                    ProfileDetailResponsiveRow(label: "SSO Region") {
                         Text(profile.ssoRegion)
                             .font(.system(.body, design: .monospaced))
                             .fontWeight(.medium)
                     }
-                    .padding(.horizontal, 18)
-                    .frame(minHeight: 38)
                 }
             }
             .ctxGlassCard()

@@ -90,6 +90,28 @@ swift run CTXCheck
 ./script/build_and_run.sh verify
 ```
 
+## Releasing
+
+1. Open a release task with scope and acceptance checks. Include its key in the
+   branch, commit, and pull request; link the existing project documentation.
+2. Run the development checks above and smoke-test the changed user flows.
+   Review the diff for private data and Kubernetes safety changes, then merge
+   the release pull request into `main`.
+3. Tag the merged commit as `vX.Y.Z` and push the tag to `opsbit-io/ctx`.
+   The **Release CTX App** workflow builds and publishes `CTX.app.zip`.
+   Add release notes describing the shipped changes and verification limits.
+4. Download the published asset, verify its embedded version and signature, and
+   launch it. Confirm the latest-release endpoint used by the updater.
+5. Run **Sync CTX cask** in `opsbit-io/homebrew-tap` or wait for its hourly run.
+   Verify that the cask version and SHA-256 match the published download, then
+   test the Homebrew installation and app update path.
+6. Update the project documentation and release task with the merged PR, tag,
+   workflow, download, and verification evidence. Close the task only when its
+   acceptance checks pass; keep any remaining checks explicitly open.
+
+The GitHub release is the version source of truth. Project documentation
+describes releases; the release task tracks delivery. Keep one record for each
+purpose and link them instead of copying the engineering backlog.
 
 ## License
 

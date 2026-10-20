@@ -7,14 +7,23 @@ struct ContentView: View {
     @AppStorage(AppAppearance.storageKey) private var appAppearanceRaw: String = AppAppearance.dark.rawValue
     @AppStorage(CTXDefaultsKey.hasCompletedOnboardingTourV1) private var hasCompletedOnboardingTour = false
     @Environment(\.colorScheme) private var colorScheme
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var profileSearchState = ToolbarSearchState()
 
     private var currentAppearance: AppAppearance {
         AppAppearance(rawValue: appAppearanceRaw) ?? .dark
     }
 
+    private var profileSearchQuery: Binding<String> {
+        Binding(
+            get: { profileSearchState.query },
+            set: { profileSearchState.setQuery($0) }
+        )
+    }
+
     var body: some View {
-        NavigationSplitView {
-            SidebarView(store: store)
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            SidebarView(store: store, searchQuery: profileSearchQuery)
                 .background(colorScheme == .light ? Color(NSColor.controlBackgroundColor).opacity(0.5) : Color.black.opacity(0.25))
                 .navigationSplitViewColumnWidth(min: 180, ideal: 250, max: 480)
         } detail: {
@@ -23,10 +32,49 @@ struct ContentView: View {
         }
         // Blending mode withinWindow keeps the compositor hierarchy deterministic
         .background(VisualEffectBackground(material: .hudWindow, blendingMode: .withinWindow))
-        .toolbar(removing: .sidebarToggle)
-        .ctxChromelessWindow(removeToolbar: false)
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                CTXToolbarSearchControl(
+                    prompt: "Search Profiles",
+                    state: $profileSearchState
+                )
+
+                Menu {
+                    Button {
+                        openNewProfile()
+                    } label: {
+                        Label("New Profile", systemImage: "person.crop.circle.badge.plus")
+                    }
+
+                    Button {
+                        store.presentFolderEditor(.add, from: .mainWindow)
+                    } label: {
+                        Label("New Folder", systemImage: "folder.badge.plus")
+                    }
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
+                .menuIndicator(.hidden)
+                .help("Create a Profile or Folder")
+                .accessibilityLabel("Create a Profile or Folder")
+            }
+        }
+        .background {
+            Button("") {
+                profileSearchState.activate()
+            }
+            .keyboardShortcut("f", modifiers: .command)
+            .opacity(0)
+            .allowsHitTesting(false)
+        }
+        .ctxNativeToolbarWindow()
         .preferredColorScheme(currentAppearance.colorScheme)
         .profileLifecyclePresentationHost(store: store, surface: .mainWindow)
+        .onChange(of: store.selectedSelection) { _, _ in
+            if profileSearchState.isExpanded {
+                profileSearchState.resultSelected()
+            }
+        }
         .accessibilityHidden(!hasCompletedOnboardingTour)
         .overlay {
             if !hasCompletedOnboardingTour {
@@ -38,6 +86,15 @@ struct ContentView: View {
                 .transition(.opacity)
             }
         }
+    }
+
+    private func openNewProfile() {
+        let targetFolder: CloudFolder? = if case .folder(let folderID) = store.selectedSelection {
+            store.allFolders.first { $0.id == folderID }
+        } else {
+            nil
+        }
+        store.presentProfileEditor(.selectProvider(targetFolder: targetFolder), from: .mainWindow)
     }
 }
 
