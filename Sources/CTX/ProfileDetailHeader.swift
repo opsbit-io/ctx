@@ -18,12 +18,15 @@ extension ProfileDetailView {
                     .stroke(.white.opacity(0.22), lineWidth: 1)
             }
             .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+            .fixedSize()
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(profile.name)
                         .font(.system(.headline, weight: .bold))
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1)
 
                     if store.isActive(profile) && profile.status == .connected {
                         Text("ACTIVE")
@@ -32,6 +35,7 @@ extension ProfileDetailView {
                             .padding(.horizontal, 8)
                             .padding(.vertical, 2)
                             .background(Color.accentColor, in: Capsule())
+                            .fixedSize()
                     }
                 }
 
@@ -45,29 +49,36 @@ extension ProfileDetailView {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
 
-            Spacer()
             headerActions
+                .layoutPriority(0)
         }
         .padding(.bottom, 8)
     }
 
     private var headerActions: some View {
+        ViewThatFits(in: .horizontal) {
+            actionRow(compact: false)
+            actionRow(compact: true)
+        }
+    }
+
+    @ViewBuilder
+    private func actionRow(compact: Bool) -> some View {
         HStack(spacing: 8) {
             if canOpenWorkspace, let context = kubernetesContext {
                 Button {
                     openWindow(id: "cluster-workspace", value: context.id)
                 } label: {
-                    Label("Workspace", systemImage: "rectangle.3.group")
-                        .font(.system(.footnote, weight: .medium))
-                        .lineLimit(1)
-                        .frame(height: 34)
-                        .padding(.horizontal, 13)
-                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    headerActionLabel("Workspace", systemImage: "rectangle.3.group", compact: compact)
                 }
                 .ctxHeaderButton(tint: .indigo, isProminent: true)
                 .help("Open Cluster Workspace")
+                .accessibilityLabel("Open Cluster Workspace")
             }
 
             Button {
@@ -76,48 +87,63 @@ extension ProfileDetailView {
                     from: .mainWindow
                 )
             } label: {
-                Label("Edit", systemImage: "pencil")
-                    .font(.system(.footnote, weight: .medium))
-                    .lineLimit(1)
-                    .frame(height: 34)
-                    .padding(.horizontal, 13)
-                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                headerActionLabel("Edit", systemImage: "pencil", compact: compact)
             }
             .ctxHeaderButton()
+            .help("Edit Profile")
+            .accessibilityLabel("Edit Profile")
 
-            connectionButton
+            connectionButton(compact: compact)
             actionsMenu
         }
-        .fixedSize(horizontal: true, vertical: false)
     }
 
     @ViewBuilder
-    private var connectionButton: some View {
+    private func headerActionLabel(_ title: String, systemImage: String, compact: Bool) -> some View {
+        if compact {
+            Image(systemName: systemImage)
+                .font(.system(.footnote, weight: .semibold))
+                .frame(width: 42, height: 34)
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        } else {
+            Label(title, systemImage: systemImage)
+                .font(.system(.footnote, weight: .medium))
+                .lineLimit(1)
+                .frame(height: 34)
+                .padding(.horizontal, 13)
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    @ViewBuilder
+    private func connectionButton(compact: Bool) -> some View {
         if currentProfile.status.isBusy {
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
-                Text(currentProfile.status.rawValue + "...")
+                if !compact {
+                    Text(currentProfile.status.rawValue + "...")
+                }
             }
             .font(.system(.footnote, weight: .medium))
             .lineLimit(1)
             .frame(height: 34)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, compact ? 13 : 14)
             .foregroundStyle(.secondary)
             .background(
                 Color.secondary.opacity(0.12),
                 in: RoundedRectangle(cornerRadius: 12, style: .continuous)
             )
+            .accessibilityLabel(currentProfile.status.rawValue)
         } else if canDisconnect {
             Button(role: .destructive) {
                 store.logout(profile, from: .mainWindow)
             } label: {
-                Text(store.needsDisconnectRetry(profile) ? "Retry Disconnect" : "Disconnect")
-                    .font(.system(.footnote, weight: .medium))
-                    .lineLimit(1)
-                    .frame(height: 34)
-                    .padding(.horizontal, 14)
-                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                headerActionLabel(
+                    store.needsDisconnectRetry(profile) ? "Retry Disconnect" : "Disconnect",
+                    systemImage: store.needsDisconnectRetry(profile) ? "arrow.clockwise" : "xmark.circle",
+                    compact: compact
+                )
             }
             .ctxHeaderButton(tint: .red, isProminent: false)
             .help(
@@ -125,18 +151,18 @@ extension ProfileDetailView {
                     ? "Disconnect \(profile.name) from CTX"
                     : "Mark \(profile.name) disconnected in CTX without changing the active profile"
             )
+            .accessibilityLabel(
+                store.needsDisconnectRetry(profile) ? "Retry disconnect \(profile.name)" : "Disconnect \(profile.name)"
+            )
         } else {
             Button {
                 store.login(profile, from: .mainWindow)
             } label: {
-                Text("Connect")
-                    .font(.system(.subheadline, weight: .semibold))
-                    .lineLimit(1)
-                    .frame(height: 34)
-                    .padding(.horizontal, 18)
-                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                headerActionLabel("Connect", systemImage: "link", compact: compact)
             }
             .ctxHeaderButton(tint: .blue, isProminent: true)
+            .help("Connect \(profile.name)")
+            .accessibilityLabel("Connect \(profile.name)")
         }
     }
 

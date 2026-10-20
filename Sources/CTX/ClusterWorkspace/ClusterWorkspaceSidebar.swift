@@ -28,8 +28,10 @@ struct ClusterWorkspaceSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Headroom for macOS traffic light buttons (🔴 🟡 🟢)
             Color.clear
-                .frame(height: 28)
+                .frame(height: 38)
+                .contentShape(Rectangle())
 
             ScrollViewReader { proxy in
                 List(selection: sectionBinding) {

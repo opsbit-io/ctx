@@ -10,42 +10,27 @@ extension ProfileDetailView {
                 .padding(.leading, 4)
 
             VStack(spacing: 0) {
-                HStack {
-                    Text("Last Login")
-                        .foregroundStyle(fieldLabelStyle)
-                    Spacer()
+                ProfileDetailResponsiveRow(label: "Last Login") {
                     Text(formatted(store.lastLoginAt))
                         .fontWeight(.medium)
                 }
-                .padding(.horizontal, 18)
-                .frame(minHeight: 38)
 
                 Divider()
                     .padding(.leading, 16)
 
-                HStack {
-                    Text("Last Verification")
-                        .foregroundStyle(fieldLabelStyle)
-                    Spacer()
+                ProfileDetailResponsiveRow(label: "Last Verification") {
                     Text(formatted(store.lastVerifiedAt))
                         .fontWeight(.medium)
                 }
-                .padding(.horizontal, 18)
-                .frame(minHeight: 38)
 
                 Divider()
                     .padding(.leading, 16)
 
-                HStack {
-                    Text("Last Call Duration")
-                        .foregroundStyle(fieldLabelStyle)
-                    Spacer()
+                ProfileDetailResponsiveRow(label: "Last Call Duration") {
                     Text(duration(store.lastCommandDuration))
                         .font(.system(.body, design: .monospaced))
                         .fontWeight(.medium)
                 }
-                .padding(.horizontal, 18)
-                .frame(minHeight: 38)
             }
             .ctxGlassCard()
         }

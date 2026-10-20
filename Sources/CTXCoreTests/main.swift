@@ -13,6 +13,7 @@ setenv(
 
 runCloudProviderDetectionTests()
 runProfileSearchMatcherTests()
+runToolbarSearchStateTests()
 try await runConnectionRecoveryTests()
 try runKubeIndentedDiscoveryTests()
 try await runKubernetesDiscoveryAndConfigTests()

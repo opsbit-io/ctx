@@ -48,6 +48,11 @@ struct ClusterCommandPaletteModal: View {
     /// palette exists for.
     @State private var matchingItems: [CommandPaletteItem] = []
 
+    init(viewModel: ClusterWorkspaceViewModel, initialQuery: String = "") {
+        self.viewModel = viewModel
+        _query = State(initialValue: initialQuery)
+    }
+
     // List of universal commands
     private var allCommands: [CommandPaletteItem] {
         var items: [CommandPaletteItem] = []

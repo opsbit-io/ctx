@@ -11,10 +11,7 @@ extension ProfileDetailView {
                 .padding(.leading, 4)
 
             VStack(spacing: 0) {
-                HStack {
-                    Text("Connection")
-                        .foregroundStyle(fieldLabelStyle)
-                    Spacer()
+                ProfileDetailResponsiveRow(label: "Connection") {
                     HStack(spacing: 6) {
                         Circle()
                             .fill(connectionIsActive ? Color.green : currentProfile.status.color)
@@ -23,8 +20,6 @@ extension ProfileDetailView {
                             .fontWeight(.medium)
                     }
                 }
-                .padding(.horizontal, 18)
-                .frame(minHeight: 38)
 
                 // The access token behind an SSO sign-in carries a refresh token and
                 // renews silently, so its hourly expiry is not a deadline anyone acts
@@ -36,47 +31,37 @@ extension ProfileDetailView {
                    expiresAt > Date() {
                     Divider()
                         .padding(.leading, 16)
-                    HStack {
-                        Text("Access expires in")
-                            .foregroundStyle(fieldLabelStyle)
-                        Spacer()
+                    ProfileDetailResponsiveRow(label: "Access expires in") {
                         SessionCountdownView(expiresAt: expiresAt)
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.orange)
                     }
-                    .padding(.horizontal, 18)
-                    .frame(minHeight: 38)
                 }
 
                 if connectionIsActive {
                     ForEach(store.connectionIdentityFields(for: currentProfile)) { field in
                         Divider()
                             .padding(.leading, 16)
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(field.label)
-                                .foregroundStyle(fieldLabelStyle)
-                            Spacer(minLength: 20)
-                            Text(field.value)
-                                .fontWeight(.medium)
-                                .multilineTextAlignment(.trailing)
-                                .textSelection(.enabled)
+                        ProfileDetailResponsiveRow(label: field.label) {
+                            HStack(spacing: 6) {
+                                Text(field.value)
+                                    .fontWeight(.medium)
+                                    .lineLimit(3)
+                                    .truncationMode(.middle)
+                                    .textSelection(.enabled)
+                                    .help(field.value)
+                                copyButton(for: field.value, fieldName: field.label)
+                            }
                         }
-                        .padding(.horizontal, 18)
-                        .frame(minHeight: 38)
                     }
                 } else {
                     Divider()
                         .padding(.leading, 16)
-                    HStack {
-                        Text("Identity")
-                            .foregroundStyle(fieldLabelStyle)
-                        Spacer()
+                    ProfileDetailResponsiveRow(label: "Identity") {
                         Text("Not Active")
                             .foregroundStyle(fieldLabelStyle)
                             .fontWeight(.medium)
                     }
-                    .padding(.horizontal, 18)
-                    .frame(minHeight: 38)
                 }
             }
             .ctxGlassCard()

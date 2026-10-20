@@ -3,92 +3,18 @@ import SwiftUI
 
 struct SidebarView: View {
     @ObservedObject var store: ProfileStore
-    var toggleSidebar: (() -> Void)? = nil
+    @Binding var searchQuery: String
     @Environment(\.openSettings) private var openSettings: OpenSettingsAction
     @State private var expandedGroups: Set<String> = []
     @State private var deleteCandidate: CloudProfile? = nil
     @State private var expandedProviders: Set<CloudProvider> = Set(CloudProvider.allCases)
-    @State private var sidebarSearchQuery = ""
 
     private var providerGroups: [ProviderGroup] {
-        ProfileGrouping.providerGroups(store.groupedProfiles, query: sidebarSearchQuery)
+        ProfileGrouping.providerGroups(store.groupedProfiles, query: searchQuery)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header Bar: window controls headroom + Sidebar Toggle + New Profile / Folder button
-            HStack(spacing: 6) {
-                Spacer()
-
-                Button {
-                    toggleSidebar?()
-                } label: {
-                    Image(systemName: "sidebar.leading")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 26, height: 26)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Toggle Sidebar (⌘⌃S)")
-
-                Menu {
-                    Button {
-                        openNewProfile()
-                    } label: {
-                        Label("New Profile", systemImage: "plus")
-                    }
-
-                    Button {
-                        store.presentFolderEditor(.add, from: .mainWindow)
-                    } label: {
-                        Label("New Folder", systemImage: "folder")
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 26, height: 26)
-                        .contentShape(Rectangle())
-                }
-                .menuIndicator(.hidden)
-                .buttonStyle(.plain)
-                .help("Create Profile or Folder")
-            }
-            .padding(.leading, 72)
-            .padding(.trailing, 12)
-            .frame(height: 38)
-
-            // Custom Search Bar (No Blue Focus Ring!)
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                TextField("Search...", text: $sidebarSearchQuery)
-                    .textFieldStyle(.plain)
-                    .font(.caption2)
-
-                if !sidebarSearchQuery.isEmpty {
-                    Button {
-                        sidebarSearchQuery = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Clear search")
-                    .accessibilityLabel("Clear search")
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .ctxGlassCard(cornerRadius: 6)
-            .padding(.horizontal, 12)
-            .padding(.top, 4)
-            .padding(.bottom, 6)
-
             List(selection: $store.selectedSelection) {
                 ForEach(providerGroups) { pGroup in
                     DisclosureGroup(isExpanded: providerBinding(for: pGroup.provider)) {
@@ -118,18 +44,17 @@ struct SidebarView: View {
                             if pGroup.folderGroups.contains(where: { g in g.profiles.contains { $0.status == .connected } }) {
                                 Circle()
                                     .fill(Color.green)
-                                    .frame(width: 5, height: 5)
+                                    .frame(width: 6, height: 6)
                             }
 
                             Spacer()
 
-                            let totalCount = pGroup.folderGroups.reduce(0) { $0 + $1.profiles.count }
-                            Text("\(totalCount)")
-                                .font(.system(.caption2, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 5)
+                            Text("\(pGroup.folderGroups.reduce(0) { $0 + $1.profiles.count })")
+                                .font(.system(.caption2, weight: .bold))
+                                .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
                                 .background(Color.secondary.opacity(0.12), in: Capsule())
+                                .foregroundStyle(.secondary)
                         }
                         .contentShape(Rectangle())
                     }
@@ -137,15 +62,13 @@ struct SidebarView: View {
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
-            
-            Divider()
-                .padding(.horizontal, 12)
-            
-            // Settings & Profile Footer
+
+            // Current user display & Settings gear
             HStack(spacing: 8) {
+                // Identity initials avatar
                 Text(store.localIdentityInitials)
-                    .font(.system(.caption2, weight: .bold))
-                    .foregroundColor(Color.accentColor)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.accentColor)
                     .frame(width: 22, height: 22)
                     .background(Color.accentColor.opacity(0.15), in: Circle())
                     .overlay {
@@ -190,20 +113,11 @@ struct SidebarView: View {
 
 
     private func providerBinding(for provider: CloudProvider) -> Binding<Bool> {
-        ProfileGrouping.expansionBinding(for: provider, in: $expandedProviders, forcedOpenWhile: sidebarSearchQuery)
+        ProfileGrouping.expansionBinding(for: provider, in: $expandedProviders, forcedOpenWhile: searchQuery)
     }
 
     private func binding(for id: String) -> Binding<Bool> {
-        ProfileGrouping.expansionBinding(for: id, in: $expandedGroups, forcedOpenWhile: sidebarSearchQuery)
-    }
-
-    private func openNewProfile() {
-        let targetFolder: CloudFolder? = if case .folder(let folderID) = store.selectedSelection {
-            store.allFolders.first { $0.id == folderID }
-        } else {
-            nil
-        }
-        store.presentProfileEditor(.selectProvider(targetFolder: targetFolder), from: .mainWindow)
+        ProfileGrouping.expansionBinding(for: id, in: $expandedGroups, forcedOpenWhile: searchQuery)
     }
 
 }

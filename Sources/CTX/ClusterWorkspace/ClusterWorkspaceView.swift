@@ -58,9 +58,7 @@ struct ClusterWorkspaceScene: View {
                     activeContextID = selected.id
                 }
             )
-            .toolbar(.hidden, for: .windowToolbar)
-            .ignoresSafeArea(.all, edges: .top)
-            .ctxChromelessWindow(title: "New Cluster Tab", removeToolbar: true)
+            .ctxNativeToolbarWindow(title: "New Cluster Tab")
         }
     }
 
@@ -110,11 +108,18 @@ private struct ClusterWorkspaceContextHost: View {
     }
 }
 
+private struct ClusterSearchRequest: Identifiable {
+    let id = UUID()
+    let query: String
+}
+
 struct ClusterWorkspaceView: View {
     let store: ProfileStore
     let onSelectCluster: ((KubernetesContextProfile) -> Void)?
     @ObservedObject var viewModel: ClusterWorkspaceViewModel
-    @State private var isSearchPresented: Bool = false
+    @State private var searchRequest: ClusterSearchRequest?
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var clusterSearchState = ToolbarSearchState()
 
     init(
         store: ProfileStore,
@@ -135,7 +140,7 @@ struct ClusterWorkspaceView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             ClusterWorkspaceSidebar(viewModel: viewModel)
                 .background(colorScheme == .light ? Color(NSColor.controlBackgroundColor).opacity(0.5) : Color.black.opacity(0.25))
                 .navigationSplitViewColumnWidth(min: 220, ideal: 248, max: 310)
@@ -162,10 +167,36 @@ struct ClusterWorkspaceView: View {
                 .environment(\.workspaceContentWidth, proxy.size.width)
             }
         }
-        .toolbar(.hidden, for: .windowToolbar)
-        .ignoresSafeArea(.all, edges: .top)
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                CTXToolbarSearchControl(
+                    prompt: "Search Cluster",
+                    state: $clusterSearchState,
+                    onSubmit: presentClusterSearch
+                )
+
+                Menu {
+                    Button {
+                        openWindow(id: "cluster-workspace", value: "")
+                    } label: {
+                        Label("New Cluster Workspace", systemImage: "macwindow.badge.plus")
+                    }
+
+                    Button {
+                        viewModel.selectedSection = .portForward
+                    } label: {
+                        Label("New Port Forward", systemImage: "arrow.left.arrow.right")
+                    }
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
+                .menuIndicator(.hidden)
+                .help("Open a Workspace or start a Port Forward")
+                .accessibilityLabel("Cluster Workspace actions")
+            }
+        }
         .background(VisualEffectBackground(material: .hudWindow, blendingMode: .behindWindow))
-        .ctxChromelessWindow(title: viewModel.title, removeToolbar: true)
+        .ctxNativeToolbarWindow(title: viewModel.title)
         .preferredColorScheme(currentAppearance.colorScheme)
         .frame(minWidth: 680, minHeight: 480)
         .task(id: viewModel.context.id) {
@@ -207,8 +238,8 @@ struct ClusterWorkspaceView: View {
         .onDisappear {
             viewModel.cancelRefresh()
         }
-        .sheet(isPresented: $isSearchPresented) {
-            ClusterCommandPaletteModal(viewModel: viewModel)
+        .sheet(item: $searchRequest) { request in
+            ClusterCommandPaletteModal(viewModel: viewModel, initialQuery: request.query)
         }
         .overlay {
             if viewModel.isQuickLookActive, let row = viewModel.quickLookResource, let section = viewModel.quickLookSection {
@@ -218,8 +249,11 @@ struct ClusterWorkspaceView: View {
         .background {
             HStack {
                 // Command Palette (Spotlight-style ⌘K)
-                Button("") { isSearchPresented = true }
+                Button("") { clusterSearchState.activate() }
                     .keyboardShortcut("k", modifiers: .command)
+
+                Button("") { clusterSearchState.activate() }
+                    .keyboardShortcut("f", modifiers: .command)
 
                 // Spacebar Quick Look — disabled while the YAML editor is open so a
                 // literal space typed into a manifest is never eaten by this instead.
@@ -302,6 +336,10 @@ struct ClusterWorkspaceView: View {
         }
         NSApp.activate(ignoringOtherApps: true)
     }
+
+    private func presentClusterSearch(_ query: String) {
+        searchRequest = ClusterSearchRequest(query: query)
+    }
 }
 
 struct ClusterWorkspaceHeader: View {
@@ -360,9 +398,10 @@ struct ClusterWorkspaceHeader: View {
             navigationControl
             clusterIcon
             titleBlock
+                .frame(minWidth: 0, alignment: .leading)
+            Spacer(minLength: 8)
+            ClusterWorkspaceHeaderActions(viewModel: viewModel, store: store)
                 .layoutPriority(1)
-            Spacer(minLength: 16)
-            statusBlock
         }
     }
 
@@ -423,35 +462,6 @@ struct ClusterWorkspaceHeader: View {
         }
     }
 
-    private var statusBlock: some View {
-        VStack(alignment: .trailing, spacing: 10) {
-            HStack(spacing: 8) {
-                if store.activeKubeContext != viewModel.context.contextName,
-                   let prof = store.profiles.first(where: { $0.provider == .kubernetes && $0.name == viewModel.context.contextName }) {
-                    Button {
-                        store.setActive(prof, from: .mainWindow)
-                    } label: {
-                        Label("Set as CLI Default", systemImage: "terminal")
-                            .font(.system(.caption, weight: .medium))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("Set this cluster as current-context in ~/.kube/config for external terminals")
-                }
-                ClusterWorkspaceHealthMenu(viewModel: viewModel, store: store)
-                refreshButton
-            }
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private var refreshButton: some View {
-        CTXReloadIconButton(
-            action: { viewModel.refreshCurrentScreen() },
-            isLoading: viewModel.isRefreshingCurrentScreen
-        )
-        .help("Refresh current screen (⌘R)")
-    }
 }
 
 struct ClusterWorkspaceView_Previews: PreviewProvider {

@@ -24,14 +24,12 @@ struct CTXApp: App {
                     appDelegate.store = store
                 }
         }
-        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 980, height: 620)
 
         WindowGroup("Cluster Workspace", id: "cluster-workspace", for: String.self) { $contextID in
             ClusterWorkspaceScene(store: store, contextID: contextID ?? "")
                 .frame(minWidth: 840, minHeight: 560)
         }
-        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 780)
 
         // A real, separate window (not a `.sheet`) so the user can drag it
